@@ -1,1135 +1,2534 @@
 #!/usr/bin/env python3
+
 """
-Austin FC Sales History - Full Data Audit
+Austin FC Sales Data - Comprehensive Data Audit
 
-Run from the data-analysis project directory.
+Purpose
+-------
+Perform a comprehensive audit of the complete Austin FC sales history
+dataset stored in PostgreSQL.
 
-The script:
-1. Connects to PostgreSQL.
-2. Audits table size, date range, financial values, missing values,
-   categorical distributions, identifier uniqueness, duplicates,
-   date consistency, and potential anomalies.
-3. Saves detailed CSV results.
-4. Saves a human-readable Markdown report.
-5. Does NOT modify or delete the source data.
+IMPORTANT
+---------
+This script is designed for large datasets.
 
-Expected database:
-    data_analysis
+It does NOT load the complete source table into pandas.
 
-Expected table:
+Instead:
+    PostgreSQL -> SQL aggregation -> small pandas result -> CSV/HTML/chart
+
+The authoritative source table is:
+
     austin_fc_sales_history
+
+The expected dataset contains approximately:
+
+    5,326,581 rows
+
+The script produces:
+    results/
+        audit/
+        charts/
+        tables/
+        austin_fc_comprehensive_audit_report.md
+        austin_fc_comprehensive_audit.html
+
+The script intentionally avoids exporting transaction-level records.
 """
 
-from pathlib import Path
+from __future__ import annotations
+
+import math
 import os
-import sys
-import traceback
+import shutil
+from datetime import datetime
+from pathlib import Path
 
+import matplotlib.pyplot as plt
 import pandas as pd
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
-from sqlalchemy.exc import SQLAlchemyError
-
-# Optional .env support. The script also works with shell environment variables.
-try:
-    from dotenv import load_dotenv
-    load_dotenv()
-except ImportError:
-    pass
 
 
-# ---------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-PROJECT_DIR = Path.home() / "data-analysis"
-RESULTS_DIR = PROJECT_DIR / "results"
-RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-DB_NAME = os.getenv("DB_NAME", "data_analysis")
-DB_USER = os.getenv("DB_USER", "dataanalyst")
-DB_HOST = os.getenv("DB_HOST", "127.0.0.1")
-DB_PORT = os.getenv("DB_PORT", "5432")
+ENV_FILE = PROJECT_ROOT / ".env"
 
-# Do not hard-code a password in this script.
-DB_PASSWORD = os.getenv("DB_PASSWORD")
+RESULTS_DIR = PROJECT_ROOT / "results"
+AUDIT_DIR = RESULTS_DIR / "audit"
+TABLES_DIR = RESULTS_DIR / "tables"
+CHARTS_DIR = RESULTS_DIR / "charts"
 
-if not DB_PASSWORD:
-    print("\nDB_PASSWORD is not set.")
-    print("Set it temporarily before running the script:")
-    print("  export DB_PASSWORD='YOUR_POSTGRES_PASSWORD'")
-    print("Then run the script again.")
-    sys.exit(1)
+DB_SCHEMA = "public"
+TABLE_NAME = "austin_fc_sales_history"
 
-TABLE = "austin_fc_sales_history"
+EXPECTED_MIN_ROWS = 5_000_000
+EXPECTED_EXACT_ROWS = 5_326_581
+
+
+# ============================================================
+# ENVIRONMENT
+# ============================================================
+
+load_dotenv(dotenv_path=ENV_FILE)
+
+required_environment = [
+    "DB_HOST",
+    "DB_PORT",
+    "DB_NAME",
+    "DB_USER",
+    "DB_PASSWORD",
+]
+
+missing_environment = [
+    variable
+    for variable in required_environment
+    if not os.getenv(variable)
+]
+
+if missing_environment:
+    raise RuntimeError(
+        "Missing database settings: "
+        + ", ".join(missing_environment)
+    )
+
+
+# ============================================================
+# DATABASE CONNECTION
+# ============================================================
+
+DATABASE_URL = (
+    "postgresql+psycopg2://"
+    f"{os.environ['DB_USER']}:{os.environ['DB_PASSWORD']}"
+    f"@{os.environ['DB_HOST']}:{os.environ['DB_PORT']}"
+    f"/{os.environ['DB_NAME']}"
+)
 
 engine = create_engine(
-    f"postgresql+psycopg2://{DB_USER}:{DB_PASSWORD}"
-    f"@{DB_HOST}:{DB_PORT}/{DB_NAME}",
+    DATABASE_URL,
     pool_pre_ping=True,
 )
 
 
-# ---------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------
+# ============================================================
+# OUTPUT DIRECTORIES
+# ============================================================
 
-def query_df(sql: str) -> pd.DataFrame:
-    """Run SQL and return a pandas DataFrame."""
-    with engine.connect() as conn:
-        return pd.read_sql(text(sql), conn)
+for directory in [
+    RESULTS_DIR,
+    AUDIT_DIR,
+    TABLES_DIR,
+    CHARTS_DIR,
+]:
+    directory.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
 
-def query_one(sql: str):
-    """Run SQL expected to return one value."""
-    with engine.connect() as conn:
-        return conn.execute(text(sql)).scalar()
+# ============================================================
+# HELPERS
+# ============================================================
+
+def sql_df(query: str) -> pd.DataFrame:
+    """Execute SQL and return a DataFrame."""
+    with engine.connect() as connection:
+        return pd.read_sql(
+            text(query),
+            connection,
+        )
 
 
-def save_csv(df: pd.DataFrame, filename: str):
-    path = RESULTS_DIR / filename
-    df.to_csv(path, index=False)
-    print(f"Saved: {path}")
+def sql_one(query: str):
+    """Execute SQL and return one row."""
+    with engine.connect() as connection:
+        result = connection.execute(text(query))
+        return result.fetchone()
+
+
+def save_csv(
+    dataframe: pd.DataFrame,
+    filename: str,
+) -> Path:
+    """Save an aggregate dataframe as CSV."""
+    path = TABLES_DIR / filename
+    dataframe.to_csv(
+        path,
+        index=False,
+    )
     return path
 
 
-def section(title: str):
-    print("\n" + "=" * 80)
-    print(title)
-    print("=" * 80)
+def format_money(value) -> str:
+    """Format a numeric value as currency."""
+    if value is None or pd.isna(value):
+        return "$0.00"
 
-
-def fmt_money(value):
-    if pd.isna(value):
-        return "N/A"
     return f"${float(value):,.2f}"
 
 
-def fmt_number(value):
-    if pd.isna(value):
-        return "N/A"
+def format_number(value) -> str:
+    """Format a number with commas."""
+    if value is None or pd.isna(value):
+        return "0"
+
     return f"{int(value):,}"
 
 
-# ---------------------------------------------------------------------
-# Main audit
-# ---------------------------------------------------------------------
+def percentage(value) -> str:
+    """Format a percentage."""
+    if value is None or pd.isna(value):
+        return "0.00%"
 
-def main():
-    print("=" * 80)
-    print("AUSTIN FC SALES HISTORY - FULL DATA AUDIT")
-    print("=" * 80)
-    print(f"Database : {DB_NAME}")
-    print(f"Table    : {TABLE}")
-    print(f"Results  : {RESULTS_DIR}")
-    print()
+    return f"{float(value):.2f}%"
 
-    # -------------------------------------------------------------
-    # 1. Connection test
-    # -------------------------------------------------------------
 
-    section("1. DATABASE CONNECTION")
+def safe_filename(value: str) -> str:
+    """Create a safe filename."""
+    return (
+        value.lower()
+        .replace(" ", "_")
+        .replace("/", "_")
+        .replace("\\", "_")
+    )
 
-    with engine.connect() as conn:
-        db_test = conn.execute(
-            text("SELECT current_database(), current_user, version()")
-        ).fetchone()
 
-    print(f"Current database : {db_test[0]}")
-    print(f"Current user     : {db_test[1]}")
-    print(f"PostgreSQL       : {db_test[2]}")
+# ============================================================
+# START
+# ============================================================
 
-    # -------------------------------------------------------------
-    # 2. Basic overview
-    # -------------------------------------------------------------
+started_at = datetime.now()
 
-    section("2. DATASET OVERVIEW")
+print()
+print("=" * 80)
+print("AUSTIN FC COMPREHENSIVE DATA AUDIT")
+print("=" * 80)
+print()
+print("Project:", PROJECT_ROOT)
+print("Database:", os.environ["DB_NAME"])
+print("Table:", f"{DB_SCHEMA}.{TABLE_NAME}")
+print()
+print("The audit will use PostgreSQL aggregation.")
+print("The complete 5.3M-row table will NOT be loaded into pandas.")
+print()
 
-    overview = query_df(f"""
+
+# ============================================================
+# 1. DATABASE CONNECTION TEST
+# ============================================================
+
+print("[01/18] Testing PostgreSQL connection...")
+
+connection_info = sql_one(
+    """
+    SELECT
+        current_database(),
+        current_user,
+        version()
+    """
+)
+
+database_name = connection_info[0]
+database_user = connection_info[1]
+database_version = connection_info[2]
+
+print("Database:", database_name)
+print("User:", database_user)
+print("Connection: OK")
+print()
+
+
+# ============================================================
+# 2. TABLE EXISTENCE
+# ============================================================
+
+print("[02/18] Checking source table...")
+
+table_exists = sql_one(
+    f"""
+    SELECT EXISTS (
+        SELECT 1
+        FROM information_schema.tables
+        WHERE table_schema = '{DB_SCHEMA}'
+          AND table_name = '{TABLE_NAME}'
+    )
+    """
+)[0]
+
+if not table_exists:
+    raise RuntimeError(
+        f"Source table {DB_SCHEMA}.{TABLE_NAME} does not exist."
+    )
+
+print(
+    f"Source table {DB_SCHEMA}.{TABLE_NAME}: FOUND"
+)
+print()
+
+
+# ============================================================
+# 3. DATASET OVERVIEW
+# ============================================================
+
+print("[03/18] Auditing complete dataset size and financial totals...")
+
+overview = sql_df(
+    f"""
+    SELECT
+        COUNT(*) AS total_rows,
+
+        COUNT(total_payment) AS rows_with_payment,
+
+        COUNT(*) FILTER (
+            WHERE transaction_date IS NOT NULL
+        ) AS rows_with_transaction_date,
+
+        MIN(transaction_date) AS earliest_transaction,
+
+        MAX(transaction_date) AS latest_transaction,
+
+        SUM(total_payment) AS total_payment,
+
+        AVG(total_payment) AS average_payment,
+
+        MIN(total_payment) AS minimum_payment,
+
+        MAX(total_payment) AS maximum_payment,
+
+        COUNT(*) FILTER (
+            WHERE total_payment IS NULL
+        ) AS null_payment,
+
+        COUNT(*) FILTER (
+            WHERE total_payment = 0
+        ) AS zero_payment,
+
+        COUNT(*) FILTER (
+            WHERE total_payment < 0
+        ) AS negative_payment
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+    """
+)
+
+save_csv(
+    overview,
+    "01_dataset_overview.csv",
+)
+
+total_rows = int(overview.iloc[0]["total_rows"])
+
+print(
+    f"Total rows: {total_rows:,}"
+)
+
+print(
+    f"Total payment: "
+    f"{format_money(overview.iloc[0]['total_payment'])}"
+)
+
+print()
+
+
+# ============================================================
+# 4. COMPLETE COLUMN INVENTORY
+# ============================================================
+
+print("[04/18] Inspecting all columns...")
+
+column_types = sql_df(
+    f"""
+    SELECT
+        ordinal_position,
+        column_name,
+        data_type,
+        is_nullable,
+        character_maximum_length,
+        numeric_precision,
+        numeric_scale
+    FROM information_schema.columns
+    WHERE table_schema = '{DB_SCHEMA}'
+      AND table_name = '{TABLE_NAME}'
+    ORDER BY ordinal_position
+    """
+)
+
+save_csv(
+    column_types,
+    "02_column_inventory.csv",
+)
+
+print(
+    f"Columns found: {len(column_types)}"
+)
+
+print()
+
+
+# ============================================================
+# 5. MISSING VALUES
+# ============================================================
+
+print("[05/18] Auditing missing values...")
+
+columns = column_types["column_name"].tolist()
+
+missing_selects = []
+
+for column in columns:
+    safe_column = '"' + column.replace('"', '""') + '"'
+
+    missing_selects.append(
+        f"""
         SELECT
-            COUNT(*) AS total_rows,
+            '{column}' AS column_name,
             COUNT(*) FILTER (
-                WHERE total_payment IS NOT NULL
-            ) AS rows_with_payment,
-            MIN(transaction_date) AS earliest_transaction,
-            MAX(transaction_date) AS latest_transaction,
-            SUM(total_payment) AS total_payment,
-            AVG(total_payment) AS average_payment,
-            MIN(total_payment) AS minimum_payment,
-            MAX(total_payment) AS maximum_payment,
-            COUNT(*) FILTER (
-                WHERE total_payment IS NULL
-            ) AS null_payment,
-            COUNT(*) FILTER (
-                WHERE total_payment = 0
-            ) AS zero_payment,
-            COUNT(*) FILTER (
-                WHERE total_payment < 0
-            ) AS negative_payment
-        FROM {TABLE};
-    """)
+                WHERE {safe_column} IS NULL
+            ) AS missing_count,
+            ROUND(
+                100.0 *
+                COUNT(*) FILTER (
+                    WHERE {safe_column} IS NULL
+                )
+                / NULLIF(COUNT(*), 0),
+                4
+            ) AS missing_percentage
+        FROM {DB_SCHEMA}.{TABLE_NAME}
+        """
+    )
 
-    save_csv(overview, "01_dataset_overview.csv")
+missing_query = "\nUNION ALL\n".join(
+    missing_selects
+)
 
-    row = overview.iloc[0]
+missing_values = sql_df(
+    missing_query
+)
 
-    print(f"Total rows          : {fmt_number(row['total_rows'])}")
-    print(f"Earliest transaction: {row['earliest_transaction']}")
-    print(f"Latest transaction  : {row['latest_transaction']}")
-    print(f"Total payment       : {fmt_money(row['total_payment'])}")
-    print(f"Average payment     : {fmt_money(row['average_payment'])}")
-    print(f"Minimum payment     : {fmt_money(row['minimum_payment'])}")
-    print(f"Maximum payment     : {fmt_money(row['maximum_payment'])}")
-    print(f"NULL payments       : {fmt_number(row['null_payment'])}")
-    print(f"Zero payments       : {fmt_number(row['zero_payment'])}")
-    print(f"Negative payments   : {fmt_number(row['negative_payment'])}")
+missing_values = missing_values.sort_values(
+    "missing_count",
+    ascending=False,
+)
 
-    # -------------------------------------------------------------
-    # 3. Missing values
-    # -------------------------------------------------------------
+save_csv(
+    missing_values,
+    "03_missing_values_by_column.csv",
+)
 
-    section("3. MISSING VALUES")
+print(
+    "Columns audited:",
+    len(missing_values),
+)
 
-    missing_sql = f"""
+print()
+
+
+# ============================================================
+# 6. IDENTIFIER UNIQUENESS
+# ============================================================
+
+print("[06/18] Auditing identifiers and uniqueness...")
+
+identifier_candidates = [
+    "primary_ticket_id",
+    "subscription_instance_id",
+    "sales_item_id",
+    "product_item_id",
+    "transaction_id",
+    "product_id",
+]
+
+existing_identifiers = [
+    column
+    for column in identifier_candidates
+    if column in columns
+]
+
+identifier_selects = [
+    "COUNT(*) AS total_rows"
+]
+
+for column in existing_identifiers:
+    identifier_selects.append(
+        f"""
+        COUNT(DISTINCT "{column}")
+        AS unique_{column}
+        """
+    )
+
+identifier_uniqueness = sql_df(
+    f"""
+    SELECT
+        {', '.join(identifier_selects)}
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+    """
+)
+
+save_csv(
+    identifier_uniqueness,
+    "04_identifier_uniqueness.csv",
+)
+
+print(
+    "Identifiers audited:",
+    ", ".join(existing_identifiers),
+)
+
+print()
+
+
+# ============================================================
+# 7. DUPLICATE SUMMARY
+# ============================================================
+
+print("[07/18] Auditing duplicate identifiers...")
+
+duplicate_results = []
+
+for column in existing_identifiers:
+
+    query = f"""
         SELECT
-            COUNT(*) AS total_rows,
+            '{column}' AS identifier,
 
-            COUNT(*) FILTER (
-                WHERE primary_ticket_id IS NULL
-                   OR TRIM(primary_ticket_id) = ''
-            ) AS primary_ticket_id_missing,
+            COUNT(*) AS duplicate_rows,
 
-            COUNT(*) FILTER (
-                WHERE subscription_instance_id IS NULL
-                   OR TRIM(subscription_instance_id) = ''
-            ) AS subscription_instance_id_missing,
+            COUNT(DISTINCT "{column}") AS duplicate_groups
 
-            COUNT(*) FILTER (
-                WHERE sales_item_id IS NULL
-                   OR TRIM(sales_item_id) = ''
-            ) AS sales_item_id_missing,
+        FROM (
+            SELECT
+                "{column}"
+            FROM {DB_SCHEMA}.{TABLE_NAME}
 
-            COUNT(*) FILTER (
-                WHERE product_item_id IS NULL
-                   OR TRIM(product_item_id) = ''
-            ) AS product_item_id_missing,
+            WHERE "{column}" IS NOT NULL
 
-            COUNT(*) FILTER (
-                WHERE transaction_id IS NULL
-                   OR TRIM(transaction_id) = ''
-            ) AS transaction_id_missing,
+            GROUP BY "{column}"
 
-            COUNT(*) FILTER (
-                WHERE product_id IS NULL
-                   OR TRIM(product_id) = ''
-            ) AS product_id_missing,
-
-            COUNT(*) FILTER (
-                WHERE sales_rep IS NULL
-                   OR TRIM(sales_rep) = ''
-            ) AS sales_rep_missing,
-
-            COUNT(*) FILTER (
-                WHERE transaction_date IS NULL
-            ) AS transaction_date_missing,
-
-            COUNT(*) FILTER (
-                WHERE last_touched_at IS NULL
-            ) AS last_touched_at_missing,
-
-            COUNT(*) FILTER (
-                WHERE item_type IS NULL
-                   OR TRIM(item_type) = ''
-            ) AS item_type_missing,
-
-            COUNT(*) FILTER (
-                WHERE product_type IS NULL
-                   OR TRIM(product_type) = ''
-            ) AS product_type_missing,
-
-            COUNT(*) FILTER (
-                WHERE sale_type IS NULL
-                   OR TRIM(sale_type) = ''
-            ) AS sale_type_missing,
-
-            COUNT(*) FILTER (
-                WHERE transfer_status IS NULL
-                   OR TRIM(transfer_status) = ''
-            ) AS transfer_status_missing,
-
-            COUNT(*) FILTER (
-                WHERE resale_status IS NULL
-                   OR TRIM(resale_status) = ''
-            ) AS resale_status_missing,
-
-            COUNT(*) FILTER (
-                WHERE sales_details IS NULL
-                   OR TRIM(sales_details) = ''
-            ) AS sales_details_missing,
-
-            COUNT(*) FILTER (
-                WHERE price_level IS NULL
-                   OR TRIM(price_level) = ''
-            ) AS price_level_missing,
-
-            COUNT(*) FILTER (
-                WHERE price_type IS NULL
-                   OR TRIM(price_type) = ''
-            ) AS price_type_missing,
-
-            COUNT(*) FILTER (
-                WHERE price_type_group IS NULL
-                   OR TRIM(price_type_group) = ''
-            ) AS price_type_group_missing,
-
-            COUNT(*) FILTER (
-                WHERE total_payment IS NULL
-            ) AS total_payment_missing,
-
-            COUNT(*) FILTER (
-                WHERE total_plan_amount IS NULL
-            ) AS total_plan_amount_missing,
-
-            COUNT(*) FILTER (
-                WHERE section IS NULL
-                   OR TRIM(section) = ''
-            ) AS section_missing,
-
-            COUNT(*) FILTER (
-                WHERE row IS NULL
-                   OR TRIM(row) = ''
-            ) AS row_missing,
-
-            COUNT(*) FILTER (
-                WHERE seat IS NULL
-                   OR TRIM(seat) = ''
-            ) AS seat_missing,
-
-            COUNT(*) FILTER (
-                WHERE product_description IS NULL
-                   OR TRIM(product_description) = ''
-            ) AS product_description_missing,
-
-            COUNT(*) FILTER (
-                WHERE application_channel IS NULL
-                   OR TRIM(application_channel) = ''
-            ) AS application_channel_missing,
-
-            COUNT(*) FILTER (
-                WHERE is_hospitality IS NULL
-            ) AS hospitality_null
-
-        FROM {TABLE};
+            HAVING COUNT(*) > 1
+        ) duplicates
     """
 
-    missing_wide = query_df(missing_sql)
-    save_csv(missing_wide, "02_missing_values_wide.csv")
+    result = sql_one(query)
 
-    missing_long = missing_wide.T.reset_index()
-    missing_long.columns = ["column", "missing_count"]
-
-    total_rows = int(row["total_rows"])
-    missing_long["missing_percentage"] = (
-        missing_long["missing_count"] / total_rows * 100
-    )
-    missing_long = missing_long.sort_values(
-        "missing_count", ascending=False
-    )
-
-    save_csv(missing_long, "03_missing_values_by_column.csv")
-
-    print(
-        missing_long[
-            missing_long["column"] != "total_rows"
-        ].to_string(index=False)
-    )
-
-    # -------------------------------------------------------------
-    # 4. Product type
-    # -------------------------------------------------------------
-
-    section("4. PRODUCT TYPE")
-
-    product_type = query_df(f"""
-        SELECT
-            COALESCE(product_type, '[NULL]') AS product_type,
-            COUNT(*) AS records,
-            ROUND(
-                COUNT(*)::numeric /
-                NULLIF((SELECT COUNT(*) FROM {TABLE}), 0) * 100,
-                2
-            ) AS record_percentage,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        GROUP BY product_type
-        ORDER BY records DESC;
-    """)
-
-    save_csv(product_type, "04_product_type.csv")
-    print(product_type.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 5. Sale type
-    # -------------------------------------------------------------
-
-    section("5. SALE TYPE")
-
-    sale_type = query_df(f"""
-        SELECT
-            COALESCE(sale_type, '[NULL]') AS sale_type,
-            COUNT(*) AS records,
-            ROUND(
-                COUNT(*)::numeric /
-                NULLIF((SELECT COUNT(*) FROM {TABLE}), 0) * 100,
-                2
-            ) AS record_percentage,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        GROUP BY sale_type
-        ORDER BY records DESC;
-    """)
-
-    save_csv(sale_type, "05_sale_type.csv")
-    print(sale_type.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 6. Application channel
-    # -------------------------------------------------------------
-
-    section("6. APPLICATION CHANNEL")
-
-    application_channel = query_df(f"""
-        SELECT
-            COALESCE(application_channel, '[NULL]') AS application_channel,
-            COUNT(*) AS records,
-            ROUND(
-                COUNT(*)::numeric /
-                NULLIF((SELECT COUNT(*) FROM {TABLE}), 0) * 100,
-                2
-            ) AS record_percentage,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        GROUP BY application_channel
-        ORDER BY records DESC;
-    """)
-
-    save_csv(application_channel, "06_application_channel.csv")
-    print(application_channel.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 7. Hospitality
-    # -------------------------------------------------------------
-
-    section("7. HOSPITALITY FLAG")
-
-    hospitality = query_df(f"""
-        SELECT
-            CASE
-                WHEN is_hospitality IS TRUE THEN 'true'
-                WHEN is_hospitality IS FALSE THEN 'false'
-                ELSE 'NULL'
-            END AS hospitality_status,
-            COUNT(*) AS records,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        GROUP BY
-            CASE
-                WHEN is_hospitality IS TRUE THEN 'true'
-                WHEN is_hospitality IS FALSE THEN 'false'
-                ELSE 'NULL'
-            END
-        ORDER BY records DESC;
-    """)
-
-    save_csv(hospitality, "07_hospitality.csv")
-    print(hospitality.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 8. Identifier uniqueness
-    # -------------------------------------------------------------
-
-    section("8. IDENTIFIER UNIQUENESS")
-
-    uniqueness = query_df(f"""
-        SELECT
-            COUNT(*) AS total_rows,
-
-            COUNT(DISTINCT NULLIF(TRIM(primary_ticket_id), ''))
-                AS unique_primary_ticket_ids,
-
-            COUNT(DISTINCT NULLIF(TRIM(subscription_instance_id), ''))
-                AS unique_subscription_instance_ids,
-
-            COUNT(DISTINCT NULLIF(TRIM(sales_item_id), ''))
-                AS unique_sales_item_ids,
-
-            COUNT(DISTINCT NULLIF(TRIM(product_item_id), ''))
-                AS unique_product_item_ids,
-
-            COUNT(DISTINCT NULLIF(TRIM(transaction_id), ''))
-                AS unique_transaction_ids,
-
-            COUNT(DISTINCT NULLIF(TRIM(product_id), ''))
-                AS unique_product_ids
-        FROM {TABLE};
-    """)
-
-    save_csv(uniqueness, "08_identifier_uniqueness.csv")
-    print(uniqueness.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 9. Duplicate groups
-    # -------------------------------------------------------------
-
-    section("9. DUPLICATE IDENTIFIER GROUPS")
-
-    duplicate_sales_items = query_df(f"""
-        SELECT
-            sales_item_id,
-            COUNT(*) AS occurrences
-        FROM {TABLE}
-        WHERE sales_item_id IS NOT NULL
-          AND TRIM(sales_item_id) <> ''
-        GROUP BY sales_item_id
-        HAVING COUNT(*) > 1
-        ORDER BY occurrences DESC
-        LIMIT 1000;
-    """)
-
-    save_csv(
-        duplicate_sales_items,
-        "09_duplicate_sales_item_ids_top1000.csv"
-    )
-
-    duplicate_transactions = query_df(f"""
-        SELECT
-            transaction_id,
-            COUNT(*) AS occurrences
-        FROM {TABLE}
-        WHERE transaction_id IS NOT NULL
-          AND TRIM(transaction_id) <> ''
-        GROUP BY transaction_id
-        HAVING COUNT(*) > 1
-        ORDER BY occurrences DESC
-        LIMIT 1000;
-    """)
-
-    save_csv(
-        duplicate_transactions,
-        "10_duplicate_transaction_ids_top1000.csv"
-    )
-
-    duplicate_tickets = query_df(f"""
-        SELECT
-            primary_ticket_id,
-            COUNT(*) AS occurrences
-        FROM {TABLE}
-        WHERE primary_ticket_id IS NOT NULL
-          AND TRIM(primary_ticket_id) <> ''
-        GROUP BY primary_ticket_id
-        HAVING COUNT(*) > 1
-        ORDER BY occurrences DESC
-        LIMIT 1000;
-    """)
-
-    save_csv(
-        duplicate_tickets,
-        "11_duplicate_primary_ticket_ids_top1000.csv"
-    )
-
-    duplicate_summary = pd.DataFrame([
+    duplicate_results.append(
         {
-            "identifier": "sales_item_id",
-            "duplicate_groups": len(duplicate_sales_items),
-        },
-        {
-            "identifier": "transaction_id",
-            "duplicate_groups": len(duplicate_transactions),
-        },
-        {
-            "identifier": "primary_ticket_id",
-            "duplicate_groups": len(duplicate_tickets),
-        },
-    ])
+            "identifier": column,
+            "duplicate_rows": result[1],
+            "duplicate_groups": result[2],
+        }
+    )
 
-    save_csv(duplicate_summary, "12_duplicate_summary.csv")
-    print(duplicate_summary.to_string(index=False))
+duplicate_summary = pd.DataFrame(
+    duplicate_results
+)
 
-    # -------------------------------------------------------------
-    # 10. Financial anomaly audit
-    # -------------------------------------------------------------
+save_csv(
+    duplicate_summary,
+    "05_duplicate_summary.csv",
+)
 
-    section("10. FINANCIAL ANOMALIES")
+print()
 
-    financial_anomalies = query_df(f"""
-        SELECT
-            COUNT(*) FILTER (WHERE total_payment < 0)
-                AS negative_payments,
 
-            COUNT(*) FILTER (WHERE total_payment = 0)
-                AS zero_payments,
+# ============================================================
+# 8. FINANCIAL QUALITY
+# ============================================================
 
-            COUNT(*) FILTER (WHERE total_payment > 10000)
-                AS payments_over_10000,
+print("[08/18] Auditing financial values...")
 
-            COUNT(*) FILTER (WHERE total_payment > 50000)
-                AS payments_over_50000,
+financial_anomalies = sql_df(
+    f"""
+    SELECT
 
-            COUNT(*) FILTER (WHERE total_payment > 100000)
-                AS payments_over_100000
-        FROM {TABLE};
-    """)
+        COUNT(*) FILTER (
+            WHERE total_payment IS NULL
+        ) AS null_payments,
 
-    save_csv(financial_anomalies, "13_financial_anomalies.csv")
-    print(financial_anomalies.to_string(index=False))
+        COUNT(*) FILTER (
+            WHERE total_payment = 0
+        ) AS zero_payments,
 
-    # Largest transactions
-    largest_transactions = query_df(f"""
-        SELECT
-            transaction_date,
-            total_payment,
+        COUNT(*) FILTER (
+            WHERE total_payment < 0
+        ) AS negative_payments,
+
+        COUNT(*) FILTER (
+            WHERE total_payment > 10000
+        ) AS payments_over_10000,
+
+        COUNT(*) FILTER (
+            WHERE total_payment > 50000
+        ) AS payments_over_50000,
+
+        COUNT(*) FILTER (
+            WHERE total_payment > 100000
+        ) AS payments_over_100000,
+
+        COUNT(*) FILTER (
+            WHERE total_payment >= 0
+        ) AS nonnegative_payments,
+
+        SUM(total_payment) FILTER (
+            WHERE total_payment < 0
+        ) AS negative_payment_value,
+
+        SUM(total_payment) FILTER (
+            WHERE total_payment = 0
+        ) AS zero_payment_value
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+    """
+)
+
+save_csv(
+    financial_anomalies,
+    "06_financial_anomalies.csv",
+)
+
+print()
+
+
+# ============================================================
+# 9. STATISTICAL PAYMENT ANALYSIS
+# ============================================================
+
+print("[09/18] Calculating payment distribution statistics...")
+
+payment_statistics = sql_df(
+    f"""
+    SELECT
+
+        COUNT(total_payment) AS non_null_payments,
+
+        MIN(total_payment) AS minimum_payment,
+
+        PERCENTILE_CONT(0.01)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS p01,
+
+        PERCENTILE_CONT(0.05)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS p05,
+
+        PERCENTILE_CONT(0.25)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS p25,
+
+        PERCENTILE_CONT(0.50)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS median_payment,
+
+        PERCENTILE_CONT(0.75)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS p75,
+
+        PERCENTILE_CONT(0.95)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS p95,
+
+        PERCENTILE_CONT(0.99)
+            WITHIN GROUP (
+                ORDER BY total_payment
+            ) AS p99,
+
+        AVG(total_payment) AS mean_payment,
+
+        STDDEV_POP(total_payment)
+            AS payment_standard_deviation,
+
+        MAX(total_payment)
+            AS maximum_payment
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+
+    WHERE total_payment IS NOT NULL
+    """
+)
+
+save_csv(
+    payment_statistics,
+    "07_payment_statistics.csv",
+)
+
+print()
+
+
+# ============================================================
+# 10. PRODUCT TYPE
+# ============================================================
+
+print("[10/18] Auditing product types...")
+
+product_type = sql_df(
+    f"""
+    SELECT
+        COALESCE(
             product_type,
+            '[NULL]'
+        ) AS product_type,
+
+        COUNT(*) AS records,
+
+        ROUND(
+            100.0 * COUNT(*) /
+            SUM(COUNT(*)) OVER (),
+            4
+        ) AS record_percentage,
+
+        SUM(total_payment) AS revenue,
+
+        AVG(total_payment) AS average_payment
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+
+    GROUP BY
+        product_type
+
+    ORDER BY
+        records DESC
+    """
+)
+
+save_csv(
+    product_type,
+    "08_product_type.csv",
+)
+
+print()
+
+
+# ============================================================
+# 11. SALE TYPE
+# ============================================================
+
+print("[11/18] Auditing sale types...")
+
+sale_type = sql_df(
+    f"""
+    SELECT
+        COALESCE(
             sale_type,
-            product_description,
+            '[NULL]'
+        ) AS sale_type,
+
+        COUNT(*) AS records,
+
+        ROUND(
+            100.0 * COUNT(*) /
+            SUM(COUNT(*)) OVER (),
+            4
+        ) AS record_percentage,
+
+        SUM(total_payment) AS revenue,
+
+        AVG(total_payment) AS average_payment
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+
+    GROUP BY
+        sale_type
+
+    ORDER BY
+        records DESC
+    """
+)
+
+save_csv(
+    sale_type,
+    "09_sale_type.csv",
+)
+
+print()
+
+
+# ============================================================
+# 12. APPLICATION CHANNEL
+# ============================================================
+
+print("[12/18] Auditing application channels...")
+
+application_channel = sql_df(
+    f"""
+    SELECT
+        COALESCE(
             application_channel,
-            primary_ticket_id,
-            transaction_id,
-            sales_item_id
-        FROM {TABLE}
-        WHERE total_payment IS NOT NULL
-        ORDER BY total_payment DESC
-        LIMIT 100;
-    """)
+            '[NULL]'
+        ) AS application_channel,
 
-    save_csv(
-        largest_transactions,
-        "14_largest_transactions_top100.csv"
+        COUNT(*) AS records,
+
+        ROUND(
+            100.0 * COUNT(*) /
+            SUM(COUNT(*)) OVER (),
+            4
+        ) AS record_percentage,
+
+        SUM(total_payment) AS revenue,
+
+        AVG(total_payment) AS average_payment
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+
+    GROUP BY
+        application_channel
+
+    ORDER BY
+        records DESC
+    """
+)
+
+save_csv(
+    application_channel,
+    "10_application_channel.csv",
+)
+
+print()
+
+
+# ============================================================
+# 13. HOSPITALITY
+# ============================================================
+
+print("[13/18] Auditing hospitality records...")
+
+hospitality_column = (
+    "is_hospitality"
+    if "is_hospitality" in columns
+    else None
+)
+
+if hospitality_column:
+
+    hospitality = sql_df(
+        f"""
+        SELECT
+
+            CASE
+                WHEN is_hospitality IS NULL
+                    THEN '[NULL]'
+
+                WHEN is_hospitality
+                    THEN 'Hospitality'
+
+                ELSE 'Non-Hospitality'
+            END AS hospitality_status,
+
+            COUNT(*) AS records,
+
+            SUM(total_payment) AS revenue,
+
+            AVG(total_payment) AS average_payment
+
+        FROM {DB_SCHEMA}.{TABLE_NAME}
+
+        GROUP BY
+            1
+
+        ORDER BY
+            records DESC
+        """
     )
 
-    # -------------------------------------------------------------
-    # 11. Yearly trend
-    # -------------------------------------------------------------
+else:
 
-    section("11. YEARLY TREND")
-
-    yearly = query_df(f"""
-        SELECT
-            EXTRACT(YEAR FROM transaction_date)::integer AS year,
-            COUNT(*) AS records,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        WHERE transaction_date IS NOT NULL
-        GROUP BY EXTRACT(YEAR FROM transaction_date)
-        ORDER BY year;
-    """)
-
-    save_csv(yearly, "15_yearly_trend.csv")
-    print(yearly.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 12. Monthly trend
-    # -------------------------------------------------------------
-
-    section("12. MONTHLY TREND")
-
-    monthly = query_df(f"""
-        SELECT
-            DATE_TRUNC('month', transaction_date)::date AS month,
-            COUNT(*) AS records,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        WHERE transaction_date IS NOT NULL
-        GROUP BY DATE_TRUNC('month', transaction_date)
-        ORDER BY month;
-    """)
-
-    save_csv(monthly, "16_monthly_trend.csv")
-
-    # -------------------------------------------------------------
-    # 13. Date consistency
-    # -------------------------------------------------------------
-
-    section("13. DATE CONSISTENCY")
-
-    date_consistency = query_df(f"""
-        SELECT
-            COUNT(*) FILTER (
-                WHERE transaction_date IS NULL
-            ) AS missing_transaction_date,
-
-            COUNT(*) FILTER (
-                WHERE last_touched_at IS NULL
-            ) AS missing_last_touched_at,
-
-            COUNT(*) FILTER (
-                WHERE transaction_date > last_touched_at
-            ) AS transaction_after_last_touch,
-
-            COUNT(*) FILTER (
-                WHERE transaction_date < TIMESTAMP '2010-01-01'
-            ) AS transaction_before_2010,
-
-            COUNT(*) FILTER (
-                WHERE transaction_date > CURRENT_TIMESTAMP
-            ) AS transaction_in_future
-        FROM {TABLE};
-    """)
-
-    save_csv(date_consistency, "17_date_consistency.csv")
-    print(date_consistency.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 14. Product description
-    # -------------------------------------------------------------
-
-    section("14. TOP PRODUCT DESCRIPTIONS")
-
-    top_products = query_df(f"""
-        SELECT
-            product_description,
-            COUNT(*) AS records,
-            ROUND(SUM(total_payment), 2) AS revenue,
-            ROUND(AVG(total_payment), 2) AS average_payment
-        FROM {TABLE}
-        WHERE product_description IS NOT NULL
-          AND TRIM(product_description) <> ''
-        GROUP BY product_description
-        ORDER BY records DESC
-        LIMIT 100;
-    """)
-
-    save_csv(top_products, "18_top_product_descriptions.csv")
-
-    # -------------------------------------------------------------
-    # 15. Status distributions
-    # -------------------------------------------------------------
-
-    section("15. TRANSFER STATUS")
-
-    transfer_status = query_df(f"""
-        SELECT
-            COALESCE(transfer_status, '[NULL]') AS transfer_status,
-            COUNT(*) AS records,
-            ROUND(SUM(total_payment), 2) AS revenue
-        FROM {TABLE}
-        GROUP BY transfer_status
-        ORDER BY records DESC;
-    """)
-
-    save_csv(transfer_status, "19_transfer_status.csv")
-
-    section("16. RESALE STATUS")
-
-    resale_status = query_df(f"""
-        SELECT
-            COALESCE(resale_status, '[NULL]') AS resale_status,
-            COUNT(*) AS records,
-            ROUND(SUM(total_payment), 2) AS revenue
-        FROM {TABLE}
-        GROUP BY resale_status
-        ORDER BY records DESC;
-    """)
-
-    save_csv(resale_status, "20_resale_status.csv")
-
-    # -------------------------------------------------------------
-    # 17. Data type information
-    # -------------------------------------------------------------
-
-    section("17. DATABASE COLUMN TYPES")
-
-    column_types = query_df(f"""
-        SELECT
-            ordinal_position,
-            column_name,
-            data_type,
-            is_nullable
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = '{TABLE}'
-        ORDER BY ordinal_position;
-    """)
-
-    save_csv(column_types, "21_column_types.csv")
-    print(column_types.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 18. Potential grain analysis
-    # -------------------------------------------------------------
-
-    section("18. POTENTIAL DATA GRAIN")
-
-    grain = query_df(f"""
-        SELECT
-            product_type,
-            sale_type,
-            COUNT(*) AS records,
-            COUNT(DISTINCT NULLIF(TRIM(primary_ticket_id), ''))
-                AS unique_primary_ticket_ids,
-            COUNT(DISTINCT NULLIF(TRIM(sales_item_id), ''))
-                AS unique_sales_item_ids,
-            COUNT(DISTINCT NULLIF(TRIM(transaction_id), ''))
-                AS unique_transaction_ids,
-            COUNT(DISTINCT NULLIF(TRIM(subscription_instance_id), ''))
-                AS unique_subscription_instances,
-            ROUND(SUM(total_payment), 2) AS revenue
-        FROM {TABLE}
-        GROUP BY product_type, sale_type
-        ORDER BY records DESC;
-    """)
-
-    save_csv(grain, "22_potential_data_grain.csv")
-    print(grain.to_string(index=False))
-
-    # -------------------------------------------------------------
-    # 19. Audit summary flags
-    # -------------------------------------------------------------
-
-    section("19. AUDIT SUMMARY")
-
-    negative_count = int(row["negative_payment"])
-    zero_count = int(row["zero_payment"])
-    null_payment_count = int(row["null_payment"])
-
-    primary_missing = int(
-        missing_wide.iloc[0]["primary_ticket_id_missing"]
+    hospitality = pd.DataFrame(
+        columns=[
+            "hospitality_status",
+            "records",
+            "revenue",
+            "average_payment",
+        ]
     )
 
-    hospitality_null = int(
-        missing_wide.iloc[0]["hospitality_null"]
+save_csv(
+    hospitality,
+    "11_hospitality.csv",
+)
+
+print()
+
+
+# ============================================================
+# 14. YEARLY TREND
+# ============================================================
+
+print("[14/18] Building yearly trend...")
+
+yearly_trend = sql_df(
+    f"""
+    SELECT
+
+        EXTRACT(
+            YEAR FROM transaction_date
+        )::INTEGER AS year,
+
+        COUNT(*) AS records,
+
+        SUM(total_payment) AS revenue,
+
+        AVG(total_payment) AS average_payment,
+
+        COUNT(DISTINCT transaction_id)
+            AS unique_transactions
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+
+    WHERE transaction_date IS NOT NULL
+
+    GROUP BY
+        1
+
+    ORDER BY
+        1
+    """
+)
+
+save_csv(
+    yearly_trend,
+    "12_yearly_trend.csv",
+)
+
+print()
+
+
+# ============================================================
+# 15. MONTHLY TREND
+# ============================================================
+
+print("[15/18] Building monthly trend...")
+
+monthly_trend = sql_df(
+    f"""
+    SELECT
+
+        DATE_TRUNC(
+            'month',
+            transaction_date
+        )::DATE AS month,
+
+        COUNT(*) AS records,
+
+        SUM(total_payment) AS revenue,
+
+        AVG(total_payment) AS average_payment,
+
+        COUNT(DISTINCT transaction_id)
+            AS unique_transactions
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+
+    WHERE transaction_date IS NOT NULL
+
+    GROUP BY
+        1
+
+    ORDER BY
+        1
+    """
+)
+
+save_csv(
+    monthly_trend,
+    "13_monthly_trend.csv",
+)
+
+print()
+
+
+# ============================================================
+# 16. DATE CONSISTENCY
+# ============================================================
+
+print("[16/18] Checking date consistency...")
+
+date_consistency = sql_df(
+    f"""
+    SELECT
+
+        COUNT(*) FILTER (
+            WHERE transaction_date IS NULL
+        ) AS missing_transaction_date,
+
+        COUNT(*) FILTER (
+            WHERE last_touched_at IS NULL
+        ) AS missing_last_touched_at,
+
+        COUNT(*) FILTER (
+            WHERE transaction_date > last_touched_at
+        ) AS transaction_after_last_touch,
+
+        COUNT(*) FILTER (
+            WHERE transaction_date < TIMESTAMP '2010-01-01'
+        ) AS transaction_before_2010,
+
+        COUNT(*) FILTER (
+            WHERE transaction_date > CURRENT_TIMESTAMP
+        ) AS transaction_in_future,
+
+        MIN(transaction_date)
+            AS earliest_transaction,
+
+        MAX(transaction_date)
+            AS latest_transaction
+
+    FROM {DB_SCHEMA}.{TABLE_NAME}
+    """
+)
+
+save_csv(
+    date_consistency,
+    "14_date_consistency.csv",
+)
+
+print()
+
+
+# ============================================================
+# 17. TRANSFER / RESALE STATUS
+# ============================================================
+
+print("[17/18] Auditing transfer and resale status...")
+
+if "transfer_status" in columns:
+
+    transfer_status = sql_df(
+        f"""
+        SELECT
+            COALESCE(
+                transfer_status,
+                '[NULL]'
+            ) AS transfer_status,
+
+            COUNT(*) AS records,
+
+            SUM(total_payment) AS revenue,
+
+            AVG(total_payment)
+                AS average_payment
+
+        FROM {DB_SCHEMA}.{TABLE_NAME}
+
+        GROUP BY
+            1
+
+        ORDER BY
+            records DESC
+        """
     )
 
-    audit_flags = [
+else:
+
+    transfer_status = pd.DataFrame()
+
+save_csv(
+    transfer_status,
+    "15_transfer_status.csv",
+)
+
+if "resale_status" in columns:
+
+    resale_status = sql_df(
+        f"""
+        SELECT
+            COALESCE(
+                resale_status,
+                '[NULL]'
+            ) AS resale_status,
+
+            COUNT(*) AS records,
+
+            SUM(total_payment) AS revenue,
+
+            AVG(total_payment)
+                AS average_payment
+
+        FROM {DB_SCHEMA}.{TABLE_NAME}
+
+        GROUP BY
+            1
+
+        ORDER BY
+            records DESC
+        """
+    )
+
+else:
+
+    resale_status = pd.DataFrame()
+
+save_csv(
+    resale_status,
+    "16_resale_status.csv",
+)
+
+print()
+
+
+# ============================================================
+# 18. DATA GRAIN / BUSINESS DIMENSIONS
+# ============================================================
+
+print("[18/18] Assessing potential data grain...")
+
+grain_dimensions = [
+    column
+    for column in [
+        "product_type",
+        "sale_type",
+    ]
+    if column in columns
+]
+
+if grain_dimensions:
+
+    grain_group = ", ".join(
+        f'"{column}"'
+        for column in grain_dimensions
+    )
+
+    grain_select = ", ".join(
+        f'"{column}"'
+        for column in grain_dimensions
+    )
+
+    grain = sql_df(
+        f"""
+        SELECT
+
+            {grain_select},
+
+            COUNT(*) AS records,
+
+            COUNT(
+                DISTINCT primary_ticket_id
+            ) AS unique_primary_ticket_ids,
+
+            COUNT(
+                DISTINCT sales_item_id
+            ) AS unique_sales_item_ids,
+
+            COUNT(
+                DISTINCT transaction_id
+            ) AS unique_transaction_ids,
+
+            COUNT(
+                DISTINCT subscription_instance_id
+            ) AS unique_subscription_instances,
+
+            SUM(total_payment) AS revenue
+
+        FROM {DB_SCHEMA}.{TABLE_NAME}
+
+        GROUP BY
+            {grain_group}
+
+        ORDER BY
+            records DESC
+        """
+    )
+
+else:
+
+    grain = pd.DataFrame()
+
+save_csv(
+    grain,
+    "17_potential_data_grain.csv",
+)
+
+print()
+
+
+# ============================================================
+# 19. TOP PRODUCT DESCRIPTIONS
+# ============================================================
+
+print("Building product description analysis...")
+
+if "product_description" in columns:
+
+    top_products = sql_df(
+        f"""
+        SELECT
+
+            COALESCE(
+                product_description,
+                '[NULL]'
+            ) AS product_description,
+
+            COUNT(*) AS records,
+
+            SUM(total_payment) AS revenue,
+
+            AVG(total_payment)
+                AS average_payment
+
+        FROM {DB_SCHEMA}.{TABLE_NAME}
+
+        GROUP BY
+            1
+
+        ORDER BY
+            records DESC
+
+        LIMIT 100
+        """
+    )
+
+else:
+
+    top_products = pd.DataFrame()
+
+save_csv(
+    top_products,
+    "18_top_product_descriptions.csv",
+)
+
+
+# ============================================================
+# 20. DATA QUALITY SCORECARD
+# ============================================================
+
+print("Building data-quality scorecard...")
+
+overview_row = overview.iloc[0]
+financial_row = financial_anomalies.iloc[0]
+date_row = date_consistency.iloc[0]
+
+quality_checks = []
+
+
+def add_check(
+    area,
+    status,
+    finding,
+    recommendation,
+):
+    quality_checks.append(
         {
-            "area": "Dataset imported",
-            "status": "PASS",
-            "finding": f"{int(row['total_rows']):,} rows available",
+            "area": area,
+            "status": status,
+            "finding": finding,
+            "recommendation": recommendation,
+        }
+    )
+
+
+# Row count
+
+if total_rows == EXPECTED_EXACT_ROWS:
+
+    add_check(
+        "Dataset completeness",
+        "PASS",
+        f"Dataset contains exactly {total_rows:,} rows.",
+        "Retain the complete dataset as the audit baseline.",
+    )
+
+elif total_rows >= EXPECTED_MIN_ROWS:
+
+    add_check(
+        "Dataset completeness",
+        "REVIEW",
+        f"Dataset contains {total_rows:,} rows.",
+        "Confirm the expected source row count.",
+    )
+
+else:
+
+    add_check(
+        "Dataset completeness",
+        "FAIL",
+        f"Only {total_rows:,} rows were found.",
+        "Verify the source load before using the audit.",
+    )
+
+
+# Payment nulls
+
+null_payments = int(
+    overview_row["null_payment"]
+)
+
+if null_payments == 0:
+
+    add_check(
+        "Payment completeness",
+        "PASS",
+        "No NULL total_payment values were detected.",
+        "No action required.",
+    )
+
+else:
+
+    add_check(
+        "Payment completeness",
+        "REVIEW",
+        f"{null_payments:,} payment values are NULL.",
+        "Investigate missing payment records.",
+    )
+
+
+# Negative payments
+
+negative_payments = int(
+    financial_row["negative_payments"]
+)
+
+if negative_payments == 0:
+
+    add_check(
+        "Negative payments",
+        "PASS",
+        "No negative payment values were detected.",
+        "No action required.",
+    )
+
+else:
+
+    add_check(
+        "Negative payments",
+        "REVIEW",
+        f"{negative_payments:,} negative payments were detected.",
+        "Determine whether negative values represent refunds or invalid data.",
+    )
+
+
+# Zero payments
+
+zero_payments = int(
+    financial_row["zero_payments"]
+)
+
+if zero_payments == 0:
+
+    add_check(
+        "Zero payments",
+        "PASS",
+        "No zero-payment records were detected.",
+        "No action required.",
+    )
+
+else:
+
+    add_check(
+        "Zero payments",
+        "REVIEW",
+        f"{zero_payments:,} zero-payment records were detected.",
+        "Determine whether zero values represent complimentary or non-revenue transactions.",
+    )
+
+
+# Dates
+
+future_dates = int(
+    date_row["transaction_in_future"]
+)
+
+if future_dates == 0:
+
+    add_check(
+        "Future transactions",
+        "PASS",
+        "No transaction dates occur after the current timestamp.",
+        "No action required.",
+    )
+
+else:
+
+    add_check(
+        "Future transactions",
+        "FAIL",
+        f"{future_dates:,} transactions have future dates.",
+        "Investigate system clock or source-data issues.",
+    )
+
+
+# Transaction after last touched
+
+after_touch = int(
+    date_row["transaction_after_last_touch"]
+)
+
+if after_touch == 0:
+
+    add_check(
+        "Date ordering",
+        "PASS",
+        "No transaction_date values occur after last_touched_at.",
+        "No action required.",
+    )
+
+else:
+
+    add_check(
+        "Date ordering",
+        "REVIEW",
+        f"{after_touch:,} transactions occur after last_touched_at.",
+        "Investigate timestamp semantics before treating this as an error.",
+    )
+
+
+# Identifier duplication
+
+for _, row in duplicate_summary.iterrows():
+
+    identifier = row["identifier"]
+    groups = int(row["duplicate_groups"])
+
+    if groups == 0:
+
+        status = "PASS"
+
+        finding = (
+            f"No duplicate {identifier} groups were detected."
+        )
+
+        recommendation = "No action required."
+
+    else:
+
+        status = "REVIEW"
+
+        finding = (
+            f"{groups:,} duplicate {identifier} groups were detected."
+        )
+
+        recommendation = (
+            "Determine whether repeated identifiers are expected "
+            "at the dataset's business grain."
+        )
+
+    add_check(
+        f"Identifier: {identifier}",
+        status,
+        finding,
+        recommendation,
+    )
+
+
+quality_scorecard = pd.DataFrame(
+    quality_checks
+)
+
+save_csv(
+    quality_scorecard,
+    "19_data_quality_scorecard.csv",
+)
+
+
+# ============================================================
+# 21. EXECUTIVE SUMMARY
+# ============================================================
+
+print("Building executive summary...")
+
+status_counts = (
+    quality_scorecard["status"]
+    .value_counts()
+    .to_dict()
+)
+
+pass_count = status_counts.get(
+    "PASS",
+    0,
+)
+
+review_count = status_counts.get(
+    "REVIEW",
+    0,
+)
+
+fail_count = status_counts.get(
+    "FAIL",
+    0,
+)
+
+executive_summary = pd.DataFrame(
+    [
+        {
+            "metric": "Total rows",
+            "value": total_rows,
         },
         {
-            "area": "Payment completeness",
-            "status": "PASS" if null_payment_count == 0 else "REVIEW",
-            "finding": f"{null_payment_count:,} NULL payment values",
-        },
-        {
-            "area": "Negative payments",
-            "status": "PASS" if negative_count == 0 else "REVIEW",
-            "finding": f"{negative_count:,} negative payment values",
-        },
-        {
-            "area": "Zero payments",
-            "status": "REVIEW" if zero_count > 0 else "PASS",
-            "finding": f"{zero_count:,} zero payment values",
-        },
-        {
-            "area": "Primary ticket ID completeness",
-            "status": "REVIEW" if primary_missing > 0 else "PASS",
-            "finding": f"{primary_missing:,} blank/NULL primary ticket IDs",
-        },
-        {
-            "area": "Hospitality field",
-            "status": "REVIEW" if hospitality_null > 0 else "PASS",
-            "finding": f"{hospitality_null:,} NULL hospitality values",
-        },
-        {
-            "area": "Duplicate identifiers",
-            "status": "REVIEW",
-            "finding": (
-                "Repeated identifiers exist. Do not delete records "
-                "until the dataset grain is established."
+            "metric": "Earliest transaction",
+            "value": str(
+                overview_row["earliest_transaction"]
             ),
         },
         {
-            "area": "Row and seat fields",
-            "status": "REVIEWED",
-            "finding": (
-                "Fields are stored as text because ticket locations "
-                "can contain alphanumeric values such as GA1."
+            "metric": "Latest transaction",
+            "value": str(
+                overview_row["latest_transaction"]
             ),
+        },
+        {
+            "metric": "Total payment",
+            "value": float(
+                overview_row["total_payment"]
+            ),
+        },
+        {
+            "metric": "Average payment",
+            "value": float(
+                overview_row["average_payment"]
+            ),
+        },
+        {
+            "metric": "Minimum payment",
+            "value": float(
+                overview_row["minimum_payment"]
+            ),
+        },
+        {
+            "metric": "Maximum payment",
+            "value": float(
+                overview_row["maximum_payment"]
+            ),
+        },
+        {
+            "metric": "PASS checks",
+            "value": pass_count,
+        },
+        {
+            "metric": "REVIEW checks",
+            "value": review_count,
+        },
+        {
+            "metric": "FAIL checks",
+            "value": fail_count,
         },
     ]
+)
 
-    audit_flags_df = pd.DataFrame(audit_flags)
-    save_csv(audit_flags_df, "23_audit_summary_flags.csv")
-    print(audit_flags_df.to_string(index=False))
+save_csv(
+    executive_summary,
+    "20_executive_summary.csv",
+)
 
-    # -------------------------------------------------------------
-    # 20. Human-readable Markdown report
-    # -------------------------------------------------------------
 
-    section("20. GENERATING REPORT")
+# ============================================================
+# CHARTS
+# ============================================================
 
-    total = int(row["total_rows"])
-    total_payment = float(row["total_payment"])
-    avg_payment = float(row["average_payment"])
-    min_payment = float(row["minimum_payment"])
-    max_payment = float(row["maximum_payment"])
+print()
+print("=" * 80)
+print("GENERATING CHARTS")
+print("=" * 80)
 
-    report_path = RESULTS_DIR / "austin_fc_data_audit_report.md"
 
-    report = f"""# Austin FC Sales History Data Audit Report
+# ------------------------------------------------------------
+# Chart 1 - Yearly Revenue
+# ------------------------------------------------------------
 
-## 1. Executive Summary
+if not yearly_trend.empty:
 
-An automated audit was performed on the PostgreSQL table
-`{TABLE}` in the `{DB_NAME}` database.
+    plt.figure(figsize=(12, 6))
 
-The dataset contains **{total:,} records**.
+    plt.plot(
+        yearly_trend["year"],
+        yearly_trend["revenue"],
+        marker="o",
+    )
 
-The transaction period runs from **{row['earliest_transaction']}**
-through **{row['latest_transaction']}**.
+    plt.title(
+        "Austin FC Revenue by Year"
+    )
 
-The total recorded payment value is **{fmt_money(total_payment)}**.
-The average recorded payment is **{fmt_money(avg_payment)}**.
-The minimum payment is **{fmt_money(min_payment)}** and the maximum
-payment is **{fmt_money(max_payment)}**.
+    plt.xlabel("Year")
+    plt.ylabel("Revenue")
 
-The audit did not modify or delete any source records.
+    plt.grid(
+        True,
+        alpha=0.3,
+    )
 
-## 2. Dataset Overview
+    plt.tight_layout()
 
-| Measure | Result |
-|---|---:|
-| Total records | {total:,} |
-| Rows with payment | {int(row['rows_with_payment']):,} |
-| Earliest transaction | {row['earliest_transaction']} |
-| Latest transaction | {row['latest_transaction']} |
-| Total payment | {fmt_money(total_payment)} |
-| Average payment | {fmt_money(avg_payment)} |
-| Minimum payment | {fmt_money(min_payment)} |
-| Maximum payment | {fmt_money(max_payment)} |
-| NULL payments | {int(row['null_payment']):,} |
-| Zero payments | {int(row['zero_payment']):,} |
-| Negative payments | {int(row['negative_payment']):,} |
+    plt.savefig(
+        CHARTS_DIR / "01_yearly_revenue.png",
+        dpi=180,
+    )
 
-## 3. Missing Data
+    plt.close()
 
-The complete missing-value results are available in:
 
-`03_missing_values_by_column.csv`
+# ------------------------------------------------------------
+# Chart 2 - Yearly Records
+# ------------------------------------------------------------
 
-The audit treats NULL and blank text values as missing for the relevant
-identifier and text fields.
+if not yearly_trend.empty:
 
-Missing values should not automatically be replaced or deleted.
-Their business meaning should be established first.
+    plt.figure(figsize=(12, 6))
 
-## 4. Identifier Analysis
+    plt.bar(
+        yearly_trend["year"].astype(str),
+        yearly_trend["records"],
+    )
 
-The audit compares the following identifiers:
+    plt.title(
+        "Austin FC Records by Year"
+    )
 
-- primary_ticket_id
-- subscription_instance_id
-- sales_item_id
-- product_item_id
-- transaction_id
-- product_id
+    plt.xlabel("Year")
+    plt.ylabel("Records")
 
-Repeated identifiers were detected during the audit.
+    plt.xticks(
+        rotation=45
+    )
 
-Repeated identifiers should not automatically be treated as duplicate
-records. The dataset grain must first be established.
+    plt.tight_layout()
 
-A primary ticket may legitimately appear in multiple sales or transaction
-records.
+    plt.savefig(
+        CHARTS_DIR / "02_yearly_records.png",
+        dpi=180,
+    )
 
-## 5. Product Type
+    plt.close()
 
-The complete product-type distribution is available in:
 
-`04_product_type.csv`
+# ------------------------------------------------------------
+# Chart 3 - Monthly Revenue
+# ------------------------------------------------------------
 
-The major product categories observed in the dataset should be analyzed
-separately where their business meanings differ.
+if not monthly_trend.empty:
 
-## 6. Sale Type
+    monthly_plot = monthly_trend.copy()
 
-The complete sale-type distribution is available in:
+    monthly_plot["month"] = pd.to_datetime(
+        monthly_plot["month"]
+    )
 
-`05_sale_type.csv`
+    plt.figure(figsize=(14, 6))
 
-Sale types should be considered when calculating sales performance because
-different transaction types may represent different business events.
+    plt.plot(
+        monthly_plot["month"],
+        monthly_plot["revenue"],
+    )
 
-## 7. Application Channel
+    plt.title(
+        "Austin FC Monthly Revenue"
+    )
 
-The application-channel distribution is available in:
+    plt.xlabel("Month")
+    plt.ylabel("Revenue")
 
-`06_application_channel.csv`
+    plt.grid(
+        True,
+        alpha=0.3,
+    )
 
-Application channel should be included in future analysis because
-transaction volume and payment value can differ substantially between
-channels.
+    plt.tight_layout()
 
-## 8. Hospitality Field
+    plt.savefig(
+        CHARTS_DIR / "03_monthly_revenue.png",
+        dpi=180,
+    )
 
-The hospitality analysis is available in:
+    plt.close()
 
-`07_hospitality.csv`.
 
-NULL hospitality values are reported separately from FALSE values.
+# ------------------------------------------------------------
+# Chart 4 - Product Types
+# ------------------------------------------------------------
 
-This distinction is important. NULL should not automatically be converted
-to FALSE without confirming the source-system meaning.
+if not product_type.empty:
 
-## 9. Financial Audit
+    chart_data = product_type.head(15)
 
-The financial anomaly results are available in:
+    plt.figure(figsize=(12, 7))
 
-`13_financial_anomalies.csv`
+    plt.barh(
+        chart_data["product_type"].astype(str),
+        chart_data["records"],
+    )
 
-The largest transactions are available in:
+    plt.title(
+        "Top Product Types by Record Count"
+    )
 
-`14_largest_transactions_top100.csv`
+    plt.xlabel("Records")
 
-Zero-value transactions and unusually large transactions should be
-investigated before any records are removed.
+    plt.tight_layout()
 
-A large payment is not automatically an error.
+    plt.savefig(
+        CHARTS_DIR / "04_product_types.png",
+        dpi=180,
+    )
 
-## 10. Date Audit
+    plt.close()
 
-The dataset covers multiple years.
 
-The yearly summary is available in:
+# ------------------------------------------------------------
+# Chart 5 - Sale Types
+# ------------------------------------------------------------
 
-`15_yearly_trend.csv`
+if not sale_type.empty:
 
-The monthly summary is available in:
+    chart_data = sale_type.head(15)
 
-`16_monthly_trend.csv`
+    plt.figure(figsize=(12, 7))
 
-Date consistency checks are available in:
+    plt.barh(
+        chart_data["sale_type"].astype(str),
+        chart_data["records"],
+    )
 
-`17_date_consistency.csv`
+    plt.title(
+        "Sale Types by Record Count"
+    )
 
-## 11. Data-Type Validation
+    plt.xlabel("Records")
 
-The database column definitions are available in:
+    plt.tight_layout()
 
-`21_column_types.csv`
+    plt.savefig(
+        CHARTS_DIR / "05_sale_types.png",
+        dpi=180,
+    )
 
-The `row` and `seat` fields are stored as text because ticket location
-values can contain alphanumeric values.
+    plt.close()
 
-This prevents values such as `GA1` from causing numeric conversion errors.
 
-## 12. Potential Data Grain
+# ------------------------------------------------------------
+# Chart 6 - Payment Distribution
+# ------------------------------------------------------------
 
-The potential grain analysis is available in:
+if not payment_statistics.empty:
 
-`22_potential_data_grain.csv`
+    stats = payment_statistics.iloc[0]
 
-Determining the exact meaning of one row is one of the most important
-remaining steps.
+    values = [
+        stats["p01"],
+        stats["p05"],
+        stats["p25"],
+        stats["median_payment"],
+        stats["p75"],
+        stats["p95"],
+        stats["p99"],
+    ]
 
-The team should determine whether a row represents a ticket, sales item,
-transaction, subscription event, resale event, or another business event.
+    labels = [
+        "P01",
+        "P05",
+        "P25",
+        "Median",
+        "P75",
+        "P95",
+        "P99",
+    ]
 
-## 13. Key Data Quality Findings
+    plt.figure(figsize=(12, 6))
 
-1. The dataset contains more than five million records.
-2. The dataset covers transactions from 2019 through 2026.
-3. Payment values contain zero-value transactions.
-4. Identifier fields have different levels of completeness.
-5. Some identifiers occur more than once.
-6. NULL and blank values occur in several fields.
-7. Hospitality NULL values must be distinguished from FALSE values.
-8. The row and seat fields require text handling because ticket locations
-   can be alphanumeric.
-9. Product types and sale types represent different categories of records.
-10. Large financial values should be investigated rather than automatically
-    removed.
+    plt.plot(
+        labels,
+        values,
+        marker="o",
+    )
 
-## 14. Recommended Next Steps
+    plt.title(
+        "Payment Distribution Percentiles"
+    )
 
-### Step 1: Establish the data grain
+    plt.xlabel("Percentile")
+    plt.ylabel("Payment")
 
-Determine exactly what one row represents.
+    plt.grid(
+        True,
+        alpha=0.3,
+    )
 
-### Step 2: Investigate missing identifiers
+    plt.tight_layout()
 
-Determine why subscription records and other records may not contain a
-primary ticket identifier.
+    plt.savefig(
+        CHARTS_DIR / "06_payment_percentiles.png",
+        dpi=180,
+    )
 
-### Step 3: Investigate repeated identifiers
+    plt.close()
 
-Determine whether repeated identifiers represent legitimate business events
-or true duplicate records.
 
-### Step 4: Investigate financial anomalies
+# ============================================================
+# MARKDOWN REPORT
+# ============================================================
 
-Review zero-value and unusually large transactions.
+print("Generating Markdown report...")
 
-### Step 5: Create analytical views
+report_path = (
+    RESULTS_DIR /
+    "austin_fc_comprehensive_audit_report.md"
+)
 
-Create purpose-specific PostgreSQL views for revenue, ticket activity,
-subscriptions, resale activity, and time-series analysis.
+report_lines = []
 
-### Step 6: Analyze with Python
+report_lines.append(
+    "# Austin FC Sales Data — Comprehensive Audit"
+)
 
-Use pandas for sampled and aggregated analysis rather than loading the
-entire dataset into memory.
+report_lines.append("")
 
-### Step 7: Build Tableau dashboards
+report_lines.append(
+    f"Audit generated: {datetime.now().isoformat(timespec='seconds')}"
+)
 
-Connect Tableau to PostgreSQL after the analytical views have been
-validated.
+report_lines.append("")
 
-## 15. Conclusion
+report_lines.append("## 1. Executive Summary")
 
-The Austin FC sales history dataset contains substantial historical
-information and is suitable for further analysis after the remaining data
-quality questions are addressed.
+report_lines.append("")
 
-The audit was designed to preserve the source data. No records were
-deleted or modified.
+report_lines.append(
+    f"- **Total rows:** {total_rows:,}"
+)
 
-The most important remaining question is the dataset grain. Understanding
-what each row represents will allow the team to distinguish legitimate
-repeated identifiers from actual duplicate records.
+report_lines.append(
+    f"- **Earliest transaction:** "
+    f"{overview_row['earliest_transaction']}"
+)
 
-The audit outputs in the `results` directory provide the evidence needed
-for the next stage of the project.
+report_lines.append(
+    f"- **Latest transaction:** "
+    f"{overview_row['latest_transaction']}"
+)
 
----
+report_lines.append(
+    f"- **Total payment:** "
+    f"{format_money(overview_row['total_payment'])}"
+)
 
-**Audit generated automatically by `austin_fc_data_audit.py`.**
+report_lines.append(
+    f"- **Average payment:** "
+    f"{format_money(overview_row['average_payment'])}"
+)
+
+report_lines.append(
+    f"- **Minimum payment:** "
+    f"{format_money(overview_row['minimum_payment'])}"
+)
+
+report_lines.append(
+    f"- **Maximum payment:** "
+    f"{format_money(overview_row['maximum_payment'])}"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "The audit was performed against the complete PostgreSQL "
+    "source table. The source table was not sampled."
+)
+
+report_lines.append("")
+
+report_lines.append("## 2. Dataset Completeness")
+
+report_lines.append("")
+
+if total_rows == EXPECTED_EXACT_ROWS:
+
+    report_lines.append(
+        f"PASS — The database contains exactly "
+        f"**{total_rows:,} rows**, matching the verified "
+        f"full dataset size."
+    )
+
+else:
+
+    report_lines.append(
+        f"REVIEW — The database contains "
+        f"**{total_rows:,} rows**."
+    )
+
+report_lines.append("")
+
+report_lines.append("## 3. Data Quality Scorecard")
+
+report_lines.append("")
+
+report_lines.append(
+    f"- PASS checks: **{pass_count}**"
+)
+
+report_lines.append(
+    f"- REVIEW checks: **{review_count}**"
+)
+
+report_lines.append(
+    f"- FAIL checks: **{fail_count}**"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "| Area | Status | Finding | Recommendation |"
+)
+
+report_lines.append(
+    "|---|---|---|---|"
+)
+
+for _, row in quality_scorecard.iterrows():
+
+    finding = str(
+        row["finding"]
+    ).replace("|", "/")
+
+    recommendation = str(
+        row["recommendation"]
+    ).replace("|", "/")
+
+    report_lines.append(
+        f"| {row['area']} | "
+        f"{row['status']} | "
+        f"{finding} | "
+        f"{recommendation} |"
+    )
+
+report_lines.append("")
+
+report_lines.append(
+    "## 4. Missing Values"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "Missing-value analysis is available in "
+    "`tables/03_missing_values_by_column.csv`."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "## 5. Financial Quality"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    f"- NULL payments: "
+    f"**{int(overview_row['null_payment']):,}**"
+)
+
+report_lines.append(
+    f"- Zero payments: "
+    f"**{int(overview_row['zero_payment']):,}**"
+)
+
+report_lines.append(
+    f"- Negative payments: "
+    f"**{int(overview_row['negative_payment']):,}**"
+)
+
+report_lines.append(
+    f"- Payments above $10,000: "
+    f"**{int(financial_row['payments_over_10000']):,}**"
+)
+
+report_lines.append(
+    f"- Payments above $50,000: "
+    f"**{int(financial_row['payments_over_50000']):,}**"
+)
+
+report_lines.append(
+    f"- Payments above $100,000: "
+    f"**{int(financial_row['payments_over_100000']):,}**"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "Payment percentile statistics are available in "
+    "`tables/07_payment_statistics.csv`."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "## 6. Identifier Analysis"
+)
+
+report_lines.append("")
+
+for _, row in duplicate_summary.iterrows():
+
+    report_lines.append(
+        f"- **{row['identifier']}**: "
+        f"{int(row['duplicate_groups']):,} duplicate groups"
+    )
+
+report_lines.append("")
+
+report_lines.append(
+    "Duplicate identifiers are not automatically data errors. "
+    "Their interpretation depends on the business grain of the "
+    "source system."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "## 7. Time Analysis"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "Yearly and monthly trends were calculated directly from "
+    "the PostgreSQL source table."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "## 8. Date Consistency"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    f"- Missing transaction dates: "
+    f"{int(date_row['missing_transaction_date']):,}"
+)
+
+report_lines.append(
+    f"- Missing last-touched dates: "
+    f"{int(date_row['missing_last_touched_at']):,}"
+)
+
+report_lines.append(
+    f"- Transaction after last-touch timestamp: "
+    f"{int(date_row['transaction_after_last_touch']):,}"
+)
+
+report_lines.append(
+    f"- Transactions before 2010: "
+    f"{int(date_row['transaction_before_2010']):,}"
+)
+
+report_lines.append(
+    f"- Future transactions: "
+    f"{int(date_row['transaction_in_future']):,}"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "## 9. Generated Outputs"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "The audit generates aggregate CSV tables and charts "
+    "for team review."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "Transaction-level identifier exports are intentionally "
+    "excluded from the published audit."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "## 10. Reproducibility"
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "The audit uses PostgreSQL for large-scale aggregation "
+    "and Python for reporting. This prevents the complete "
+    "5.3M-row source table from being loaded into memory at once."
+)
+
+report_lines.append("")
+
+report_lines.append(
+    "The source database credentials are stored in `.env` "
+    "and are not included in the repository."
+)
+
+report_lines.append("")
+
+report_path.write_text(
+    "\n".join(report_lines),
+    encoding="utf-8",
+)
+
+
+# ============================================================
+# HTML DASHBOARD
+# ============================================================
+
+print("Generating HTML dashboard...")
+
+html_path = (
+    RESULTS_DIR /
+    "austin_fc_comprehensive_audit.html"
+)
+
+html = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+
+<meta charset="UTF-8">
+
+<meta name="viewport"
+      content="width=device-width, initial-scale=1.0">
+
+<title>Austin FC Comprehensive Data Audit</title>
+
+<style>
+
+body {{
+    font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+
+    margin: 0;
+    background: #f5f7fa;
+    color: #1f2937;
+}}
+
+header {{
+    background: #111827;
+    color: white;
+    padding: 40px;
+}}
+
+header h1 {{
+    margin: 0 0 10px 0;
+}}
+
+.container {{
+    max-width: 1200px;
+    margin: auto;
+    padding: 30px;
+}}
+
+.grid {{
+    display: grid;
+    grid-template-columns:
+        repeat(
+            auto-fit,
+            minmax(220px, 1fr)
+        );
+
+    gap: 20px;
+}}
+
+.card {{
+    background: white;
+    border-radius: 10px;
+    padding: 22px;
+    box-shadow:
+        0 2px 8px
+        rgba(0,0,0,0.08);
+}}
+
+.metric {{
+    font-size: 28px;
+    font-weight: bold;
+}}
+
+.label {{
+    color: #6b7280;
+    margin-top: 6px;
+}}
+
+section {{
+    margin-top: 35px;
+}}
+
+img {{
+    max-width: 100%;
+    height: auto;
+    background: white;
+    padding: 10px;
+    border-radius: 8px;
+}}
+
+table {{
+    width: 100%;
+    border-collapse: collapse;
+    background: white;
+}}
+
+th,
+td {{
+    padding: 10px;
+    border-bottom: 1px solid #e5e7eb;
+    text-align: left;
+}}
+
+th {{
+    background: #f3f4f6;
+}}
+
+.pass {{
+    font-weight: bold;
+}}
+
+.review {{
+    font-weight: bold;
+}}
+
+.fail {{
+    font-weight: bold;
+}}
+
+.small {{
+    color: #6b7280;
+}}
+
+</style>
+
+</head>
+
+<body>
+
+<header>
+
+<h1>Austin FC Sales Data Audit</h1>
+
+<p>
+Comprehensive audit of the complete PostgreSQL dataset
+</p>
+
+<p class="small">
+Generated: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+</p>
+
+</header>
+
+<div class="container">
+
+<section>
+
+<h2>Executive Summary</h2>
+
+<div class="grid">
+
+<div class="card">
+<div class="metric">
+{total_rows:,}
+</div>
+<div class="label">
+Total Records
+</div>
+</div>
+
+<div class="card">
+<div class="metric">
+{format_money(overview_row['total_payment'])}
+</div>
+<div class="label">
+Total Payment
+</div>
+</div>
+
+<div class="card">
+<div class="metric">
+{format_money(overview_row['average_payment'])}
+</div>
+<div class="label">
+Average Payment
+</div>
+</div>
+
+<div class="card">
+<div class="metric">
+{pass_count}
+</div>
+<div class="label">
+PASS Checks
+</div>
+</div>
+
+<div class="card">
+<div class="metric">
+{review_count}
+</div>
+<div class="label">
+REVIEW Checks
+</div>
+</div>
+
+<div class="card">
+<div class="metric">
+{fail_count}
+</div>
+<div class="label">
+FAIL Checks
+</div>
+</div>
+
+</div>
+
+</section>
+
+<section>
+
+<h2>Dataset Coverage</h2>
+
+<div class="card">
+
+<p>
+<b>Earliest transaction:</b>
+{overview_row['earliest_transaction']}
+</p>
+
+<p>
+<b>Latest transaction:</b>
+{overview_row['latest_transaction']}
+</p>
+
+<p>
+<b>Minimum payment:</b>
+{format_money(overview_row['minimum_payment'])}
+</p>
+
+<p>
+<b>Maximum payment:</b>
+{format_money(overview_row['maximum_payment'])}
+</p>
+
+<p>
+<b>NULL payments:</b>
+{int(overview_row['null_payment']):,}
+</p>
+
+<p>
+<b>Zero payments:</b>
+{int(overview_row['zero_payment']):,}
+</p>
+
+<p>
+<b>Negative payments:</b>
+{int(overview_row['negative_payment']):,}
+</p>
+
+</div>
+
+</section>
+
+<section>
+
+<h2>Data Quality Scorecard</h2>
+
+<table>
+
+<thead>
+
+<tr>
+<th>Area</th>
+<th>Status</th>
+<th>Finding</th>
+<th>Recommendation</th>
+</tr>
+
+</thead>
+
+<tbody>
 """
 
-    report_path.write_text(report, encoding="utf-8")
-    print(f"Saved: {report_path}")
+for _, row in quality_scorecard.iterrows():
 
-    # -------------------------------------------------------------
-    # Finish
-    # -------------------------------------------------------------
+    html += f"""
+<tr>
 
-    print("\n" + "=" * 80)
-    print("AUDIT COMPLETE")
-    print("=" * 80)
-    print(f"Report : {report_path}")
-    print(f"Results: {RESULTS_DIR}")
-    print("\nNo source data was modified or deleted.")
-    print("\nFiles generated:")
-    for path in sorted(RESULTS_DIR.iterdir()):
-        print(f"  - {path.name}")
+<td>
+{row['area']}
+</td>
+
+<td class="{str(row['status']).lower()}">
+{row['status']}
+</td>
+
+<td>
+{row['finding']}
+</td>
+
+<td>
+{row['recommendation']}
+</td>
+
+</tr>
+"""
 
 
-if __name__ == "__main__":
-    try:
-        main()
-    except SQLAlchemyError as exc:
-        print("\nDATABASE ERROR")
-        print(exc)
-        print("\nCheck that PostgreSQL is running and that your credentials")
-        print("are correct.")
-        sys.exit(2)
-    except Exception as exc:
-        print("\nUNEXPECTED ERROR")
-        print(exc)
-        traceback.print_exc()
-        sys.exit(3)
+html += """
+</tbody>
+
+</table>
+
+</section>
+
+<section>
+
+<h2>Yearly Revenue</h2>
+
+<img
+src="charts/01_yearly_revenue.png"
+alt="Yearly revenue chart">
+
+</section>
+
+<section>
+
+<h2>Yearly Records</h2>
+
+<img
+src="charts/02_yearly_records.png"
+alt="Yearly records chart">
+
+</section>
+
+<section>
+
+<h2>Monthly Revenue</h2>
+
+<img
+src="charts/03_monthly_revenue.png"
+alt="Monthly revenue chart">
+
+</section>
+
+<section>
+
+<h2>Product Types</h2>
+
+<img
+src="charts/04_product_types.png"
+alt="Product types chart">
+
+</section>
+
+<section>
+
+<h2>Sale Types</h2>
+
+<img
+src="charts/05_sale_types.png"
+alt="Sale types chart">
+
+</section>
+
+<section>
+
+<h2>Payment Distribution</h2>
+
+<img
+src="charts/06_payment_percentiles.png"
+alt="Payment distribution chart">
+
+</section>
+
+<section>
+
+<h2>Audit Methodology</h2>
+
+<div class="card">
+
+<p>
+This audit was performed against the complete PostgreSQL
+source table.
+</p>
+
+<p>
+The audit does not load all source records into pandas.
+Large aggregations are performed by PostgreSQL and only
+small aggregate result sets are transferred to Python.
+</p>
+
+<p>
+The source dataset contains more than five million records.
+Transaction-level exports are intentionally excluded from
+the published audit.
+</p>
+
+</div>
+
+</section>
+
+</div>
+
+</body>
+
+</html>
+"""
+
+html_path.write_text(
+    html,
+    encoding="utf-8",
+)
+
+
+# ============================================================
+# FINAL VERIFICATION
+# ============================================================
+
+finished_at = datetime.now()
+
+elapsed = (
+    finished_at - started_at
+).total_seconds()
+
+print()
+print("=" * 80)
+print("AUDIT COMPLETE")
+print("=" * 80)
+print()
+print(
+    f"Rows audited: {total_rows:,}"
+)
+print(
+    f"Elapsed time: {elapsed:.2f} seconds"
+)
+print()
+print("Reports:")
+print(
+    f"  {report_path}"
+)
+print(
+    f"  {html_path}"
+)
+print()
+print("Tables:")
+print(
+    f"  {TABLES_DIR}"
+)
+print()
+print("Charts:")
+print(
+    f"  {CHARTS_DIR}"
+)
+print()
+print(
+    "IMPORTANT: The complete source dataset was audited "
+    "through PostgreSQL aggregation."
+)
+print()
+
+
+# ============================================================
+# DATABASE CLEANUP
+# ============================================================
+
+engine.dispose()
