@@ -1,0 +1,9 @@
+area,status,finding
+Dataset imported,PASS,"5,326,581 rows available"
+Payment completeness,PASS,0 NULL payment values
+Negative payments,PASS,0 negative payment values
+Zero payments,REVIEW,"2,062,980 zero payment values"
+Primary ticket ID completeness,REVIEW,"162,834 blank/NULL primary ticket IDs"
+Hospitality field,REVIEW,"2,049,474 NULL hospitality values"
+Duplicate identifiers,REVIEW,Repeated identifiers exist. Do not delete records until the dataset grain is established.
+Row and seat fields,REVIEWED,Fields are stored as text because ticket locations can contain alphanumeric values such as GA1.

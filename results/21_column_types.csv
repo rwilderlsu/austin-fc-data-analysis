@@ -1,0 +1,28 @@
+ordinal_position,column_name,data_type,is_nullable
+1,primary_ticket_id,text,YES
+2,subscription_instance_id,text,YES
+3,sales_item_id,text,YES
+4,product_item_id,text,YES
+5,transaction_id,text,YES
+6,product_id,text,YES
+7,internal_account_id,text,YES
+8,sales_rep,text,YES
+9,transaction_date,timestamp without time zone,YES
+10,last_touched_at,timestamp with time zone,YES
+11,item_type,text,YES
+12,product_type,text,YES
+13,sale_type,text,YES
+14,transfer_status,text,YES
+15,resale_status,text,YES
+16,sales_details,text,YES
+17,price_level,text,YES
+18,price_type,text,YES
+19,price_type_group,text,YES
+20,total_payment,numeric,YES
+21,total_plan_amount,numeric,YES
+22,section,text,YES
+23,row,text,YES
+24,seat,text,YES
+25,product_description,text,YES
+26,application_channel,text,YES
+27,is_hospitality,boolean,YES
