@@ -1,90 +1,80 @@
 # Austin FC Sales Data — Comprehensive Audit
 
-Audit generated: 2026-10-01T02:57:44
+Generated: 2026-10-02T06:52:50
 
-## 1. Executive Summary
+## Executive Summary
 
-- **Total rows:** 5,326,581
-- **Earliest transaction:** 2019-08-15 18:42:04.997000
-- **Latest transaction:** 2026-09-18 21:21:33.293000
-- **Total payment:** $482,706,014.11
-- **Average payment:** $90.62
-- **Minimum payment:** $0.00
-- **Maximum payment:** $293,025.20
+- Records audited: **5,335,362**
+- Total revenue: **$482,907,804.90**
+- Average transaction: **$90.51**
+- Median transaction: **$35.62**
+- Minimum payment: **$0.00**
+- Maximum payment: **$293,025.20**
+- Earliest transaction: **2019-08-15 18:42:04.997000**
+- Latest transaction: **2026-09-24 20:04:57.997000**
 
-The audit was performed against the complete PostgreSQL source table. The source table was not sampled.
+The analysis was performed against the complete PostgreSQL source table. The source table was not sampled.
 
-## 2. Dataset Completeness
+## Business Issues Requiring Attention
 
-PASS — The database contains exactly **5,326,581 rows**, matching the verified full dataset size.
+| Category | Severity | Issue | Evidence | Business Impact | Recommended Action |
+|---|---|---|---|---|---|
+| Data completeness | INFO | Dataset row count matches the verified updated dataset. | 5,335,362 records audited. | Supports confidence in the current database load. | Retain this dataset as the current audit baseline. |
+| Revenue data | REVIEW | Zero-payment transactions exist. | 2,069,655 records have a zero payment. | May represent complimentary, adjusted, test, or non-revenue transactions. | Classify zero-payment transactions by business purpose. |
+| Transaction monitoring | REVIEW | Very high-value transactions require validation. | 1 transactions exceed $100,000. | Unusual values can materially affect aggregate revenue. | Validate high-value transactions against source-system records. |
+| Data completeness | REVIEW | Missing primary_ticket_id values exist. | 162,859 records are missing the identifier. | May affect customer, ticket, or subscription-level analysis. | Interpret missingness by product type before labeling it as an error. |
+| Data completeness | REVIEW | Missing subscription_instance_id values exist. | 1,937,352 records are missing the identifier. | May affect customer, ticket, or subscription-level analysis. | Interpret missingness by product type before labeling it as an error. |
+| Reporting period | INFO | September 2026 is a partial month. | The latest transaction date is September 24, 2026. | Monthly comparisons can be misleading if partial periods are treated as complete. | Flag September 2026 as partial in dashboards and reports. |
+| Duplicate transactions | REVIEW | Repeated transaction IDs were detected. | 10,000 duplicate transaction groups are present in the exported sample. | Could represent legitimate multi-line transactions or duplicate records. | Investigate transaction grain before deduplicating. |
 
-## 3. Data Quality Scorecard
-
-- PASS checks: **5**
-- REVIEW checks: **7**
-- FAIL checks: **0**
-
-| Area | Status | Finding | Recommendation |
-|---|---|---|---|
-| Dataset completeness | PASS | Dataset contains exactly 5,326,581 rows. | Retain the complete dataset as the audit baseline. |
-| Payment completeness | PASS | No NULL total_payment values were detected. | No action required. |
-| Negative payments | PASS | No negative payment values were detected. | No action required. |
-| Zero payments | REVIEW | 2,062,980 zero-payment records were detected. | Determine whether zero values represent complimentary or non-revenue transactions. |
-| Future transactions | PASS | No transaction dates occur after the current timestamp. | No action required. |
-| Date ordering | PASS | No transaction_date values occur after last_touched_at. | No action required. |
-| Identifier: primary_ticket_id | REVIEW | 1,586,095 duplicate primary_ticket_id groups were detected. | Determine whether repeated identifiers are expected at the dataset's business grain. |
-| Identifier: subscription_instance_id | REVIEW | 125,430 duplicate subscription_instance_id groups were detected. | Determine whether repeated identifiers are expected at the dataset's business grain. |
-| Identifier: sales_item_id | REVIEW | 178 duplicate sales_item_id groups were detected. | Determine whether repeated identifiers are expected at the dataset's business grain. |
-| Identifier: product_item_id | REVIEW | 178 duplicate product_item_id groups were detected. | Determine whether repeated identifiers are expected at the dataset's business grain. |
-| Identifier: transaction_id | REVIEW | 888,928 duplicate transaction_id groups were detected. | Determine whether repeated identifiers are expected at the dataset's business grain. |
-| Identifier: product_id | REVIEW | 575 duplicate product_id groups were detected. | Determine whether repeated identifiers are expected at the dataset's business grain. |
-
-## 4. Missing Values
-
-Missing-value analysis is available in `tables/03_missing_values_by_column.csv`.
-
-## 5. Financial Quality
+## Financial Quality
 
 - NULL payments: **0**
-- Zero payments: **2,062,980**
+- Zero payments: **2,069,655**
 - Negative payments: **0**
-- Payments above $10,000: **2,924**
+- Payments above $10,000: **2,928**
 - Payments above $50,000: **1**
 - Payments above $100,000: **1**
 
-Payment percentile statistics are available in `tables/07_payment_statistics.csv`.
+## Payment Distribution
 
-## 6. Identifier Analysis
+- P25: **$0.00**
+- Median: **$35.62**
+- P75: **$69.51**
+- P90: **$155.60**
+- P95: **$298.70**
+- P99: **$931.95**
 
-- **primary_ticket_id**: 1,586,095 duplicate groups
-- **subscription_instance_id**: 125,430 duplicate groups
-- **sales_item_id**: 178 duplicate groups
-- **product_item_id**: 178 duplicate groups
-- **transaction_id**: 888,928 duplicate groups
-- **product_id**: 575 duplicate groups
+## Product Performance
 
-Duplicate identifiers are not automatically data errors. Their interpretation depends on the business grain of the source system.
+| Product Type | Records | Revenue | Average Payment | Revenue Share |
+|---|---:|---:|---:|---:|
+| Ticket | 3,117,996 | $250,837,782.74 | $80.45 | 51.94% |
+| Subscription | 162,859 | $186,437,253.16 | $1,144.78 | 38.61% |
+| Resale | 2,054,507 | $45,632,769.00 | $22.21 | 9.45% |
 
-## 7. Time Analysis
+## Application Channel Performance
 
-Yearly and monthly trends were calculated directly from the PostgreSQL source table.
+| Channel | Records | Revenue | Average Payment | Revenue Share |
+|---|---:|---:|---:|---:|
+| Internal | 1,882,587 | $259,192,883.48 | $137.68 | 53.67% |
+| bSRO | 639,498 | $114,083,690.16 | $178.40 | 23.62% |
+| eSRO | 2,813,277 | $109,631,231.26 | $38.97 | 22.70% |
 
-## 8. Date Consistency
+## Date Coverage
 
-- Missing transaction dates: 0
-- Missing last-touched dates: 0
-- Transaction after last-touch timestamp: 0
-- Transactions before 2010: 0
-- Future transactions: 0
+- Earliest transaction: **2019-08-15 18:42:04.997000**
+- Latest transaction: **2026-09-24 20:04:57.997000**
+- September 2026 is a partial reporting month.
 
-## 9. Generated Outputs
+## Methodology
 
-The audit generates aggregate CSV tables and charts for team review.
+Large-scale calculations were performed in PostgreSQL. Only small aggregate result sets were transferred to pandas.
 
-Transaction-level identifier exports are intentionally excluded from the published audit.
+This prevents the complete 5.3-million-row dataset from being loaded into memory.
 
-## 10. Reproducibility
+Unusual values are treated as investigation candidates. They are not automatically classified as fraud or errors.
 
-The audit uses PostgreSQL for large-scale aggregation and Python for reporting. This prevents the complete 5.3M-row source table from being loaded into memory at once.
+## Generated Outputs
 
-The source database credentials are stored in `.env` and are not included in the repository.
+The `results/tables/` directory contains aggregate CSV outputs. The `results/charts/` directory contains visualizations.

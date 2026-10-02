@@ -1,6 +1,8 @@
 
 <!DOCTYPE html>
+
 <html lang="en">
+
 <head>
 
 <meta charset="UTF-8">
@@ -8,7 +10,9 @@
 <meta name="viewport"
       content="width=device-width, initial-scale=1.0">
 
-<title>Austin FC Comprehensive Data Audit</title>
+<title>
+Austin FC Comprehensive Sales Audit
+</title>
 
 <style>
 
@@ -19,28 +23,31 @@ body {
         sans-serif;
 
     margin: 0;
+
     background: #f5f7fa;
+
     color: #1f2937;
 }
 
 header {
     background: #111827;
+
     color: white;
+
     padding: 40px;
 }
 
-header h1 {
-    margin: 0 0 10px 0;
-}
-
 .container {
-    max-width: 1200px;
+    max-width: 1400px;
+
     margin: auto;
+
     padding: 30px;
 }
 
 .grid {
     display: grid;
+
     grid-template-columns:
         repeat(
             auto-fit,
@@ -52,8 +59,11 @@ header h1 {
 
 .card {
     background: white;
-    border-radius: 10px;
+
     padding: 22px;
+
+    border-radius: 10px;
+
     box-shadow:
         0 2px 8px
         rgba(0,0,0,0.08);
@@ -61,11 +71,13 @@ header h1 {
 
 .metric {
     font-size: 28px;
+
     font-weight: bold;
 }
 
 .label {
     color: #6b7280;
+
     margin-top: 6px;
 }
 
@@ -73,45 +85,40 @@ section {
     margin-top: 35px;
 }
 
-img {
-    max-width: 100%;
-    height: auto;
-    background: white;
-    padding: 10px;
-    border-radius: 8px;
-}
-
 table {
     width: 100%;
+
     border-collapse: collapse;
+
     background: white;
 }
 
 th,
 td {
     padding: 10px;
-    border-bottom: 1px solid #e5e7eb;
+
+    border-bottom:
+        1px solid #e5e7eb;
+
     text-align: left;
+
+    vertical-align: top;
 }
 
 th {
     background: #f3f4f6;
 }
 
-.pass {
-    font-weight: bold;
-}
+img {
+    max-width: 100%;
 
-.review {
-    font-weight: bold;
-}
+    height: auto;
 
-.fail {
-    font-weight: bold;
-}
+    background: white;
 
-.small {
-    color: #6b7280;
+    padding: 10px;
+
+    border-radius: 8px;
 }
 
 </style>
@@ -122,14 +129,17 @@ th {
 
 <header>
 
-<h1>Austin FC Sales Data Audit</h1>
+<h1>
+Austin FC Comprehensive Sales Data Audit
+</h1>
 
 <p>
-Comprehensive audit of the complete PostgreSQL dataset
+Full PostgreSQL dataset analysis
 </p>
 
-<p class="small">
-Generated: 2026-10-01 02:57:44
+<p>
+Generated:
+2026-10-02 06:52:50
 </p>
 
 </header>
@@ -138,43 +148,52 @@ Generated: 2026-10-01 02:57:44
 
 <section>
 
-<h2>Executive Summary</h2>
+<h2>Executive KPIs</h2>
 
 <div class="grid">
 
 <div class="card">
 <div class="metric">
-5,326,581
+5,335,362
 </div>
 <div class="label">
-Total Records
+Records Audited
 </div>
 </div>
 
 <div class="card">
 <div class="metric">
-$482,706,014.11
+$482,907,804.90
 </div>
 <div class="label">
-Total Payment
+Total Revenue
 </div>
 </div>
 
 <div class="card">
 <div class="metric">
-$90.62
+$90.51
 </div>
 <div class="label">
-Average Payment
+Average Transaction
 </div>
 </div>
 
 <div class="card">
 <div class="metric">
-5
+$35.62
 </div>
 <div class="label">
-PASS Checks
+Median Transaction
+</div>
+</div>
+
+<div class="card">
+<div class="metric">
+$293,025.20
+</div>
+<div class="label">
+Maximum Transaction
 </div>
 </div>
 
@@ -183,16 +202,7 @@ PASS Checks
 7
 </div>
 <div class="label">
-REVIEW Checks
-</div>
-</div>
-
-<div class="card">
-<div class="metric">
-0
-</div>
-<div class="label">
-FAIL Checks
+Business Issues
 </div>
 </div>
 
@@ -200,309 +210,92 @@ FAIL Checks
 
 </section>
 
-<section>
-
-<h2>Dataset Coverage</h2>
-
-<div class="card">
-
-<p>
-<b>Earliest transaction:</b>
-2019-08-15 18:42:04.997000
-</p>
-
-<p>
-<b>Latest transaction:</b>
-2026-09-18 21:21:33.293000
-</p>
-
-<p>
-<b>Minimum payment:</b>
-$0.00
-</p>
-
-<p>
-<b>Maximum payment:</b>
-$293,025.20
-</p>
-
-<p>
-<b>NULL payments:</b>
-0
-</p>
-
-<p>
-<b>Zero payments:</b>
-2,062,980
-</p>
-
-<p>
-<b>Negative payments:</b>
-0
-</p>
-
-</div>
-
-</section>
 
 <section>
 
-<h2>Data Quality Scorecard</h2>
+<h2>Business Issue Register</h2>
 
 <table>
 
 <thead>
 
 <tr>
-<th>Area</th>
-<th>Status</th>
-<th>Finding</th>
-<th>Recommendation</th>
+<th>Category</th>
+<th>Severity</th>
+<th>Issue</th>
+<th>Evidence</th>
+<th>Business Impact</th>
+<th>Recommended Action</th>
 </tr>
 
 </thead>
 
 <tbody>
 
-<tr>
 
-<td>
-Dataset completeness
-</td>
-
-<td class="pass">
-PASS
-</td>
-
-<td>
-Dataset contains exactly 5,326,581 rows.
-</td>
-
-<td>
-Retain the complete dataset as the audit baseline.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Payment completeness
-</td>
-
-<td class="pass">
-PASS
-</td>
-
-<td>
-No NULL total_payment values were detected.
-</td>
-
-<td>
-No action required.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Negative payments
-</td>
-
-<td class="pass">
-PASS
-</td>
-
-<td>
-No negative payment values were detected.
-</td>
-
-<td>
-No action required.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Zero payments
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-2,062,980 zero-payment records were detected.
-</td>
-
-<td>
-Determine whether zero values represent complimentary or non-revenue transactions.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Future transactions
-</td>
-
-<td class="pass">
-PASS
-</td>
-
-<td>
-No transaction dates occur after the current timestamp.
-</td>
-
-<td>
-No action required.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Date ordering
-</td>
-
-<td class="pass">
-PASS
-</td>
-
-<td>
-No transaction_date values occur after last_touched_at.
-</td>
-
-<td>
-No action required.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Identifier: primary_ticket_id
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-1,586,095 duplicate primary_ticket_id groups were detected.
-</td>
-
-<td>
-Determine whether repeated identifiers are expected at the dataset's business grain.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Identifier: subscription_instance_id
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-125,430 duplicate subscription_instance_id groups were detected.
-</td>
-
-<td>
-Determine whether repeated identifiers are expected at the dataset's business grain.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Identifier: sales_item_id
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-178 duplicate sales_item_id groups were detected.
-</td>
-
-<td>
-Determine whether repeated identifiers are expected at the dataset's business grain.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Identifier: product_item_id
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-178 duplicate product_item_id groups were detected.
-</td>
-
-<td>
-Determine whether repeated identifiers are expected at the dataset's business grain.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Identifier: transaction_id
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-888,928 duplicate transaction_id groups were detected.
-</td>
-
-<td>
-Determine whether repeated identifiers are expected at the dataset's business grain.
-</td>
-
-</tr>
-
-<tr>
-
-<td>
-Identifier: product_id
-</td>
-
-<td class="review">
-REVIEW
-</td>
-
-<td>
-575 duplicate product_id groups were detected.
-</td>
-
-<td>
-Determine whether repeated identifiers are expected at the dataset's business grain.
-</td>
-
-</tr>
+    <tr>
+        <td>Data completeness</td>
+        <td>INFO</td>
+        <td>Dataset row count matches the verified updated dataset.</td>
+        <td>5,335,362 records audited.</td>
+        <td>Supports confidence in the current database load.</td>
+        <td>Retain this dataset as the current audit baseline.</td>
+    </tr>
+    
+    <tr>
+        <td>Revenue data</td>
+        <td>REVIEW</td>
+        <td>Zero-payment transactions exist.</td>
+        <td>2,069,655 records have a zero payment.</td>
+        <td>May represent complimentary, adjusted, test, or non-revenue transactions.</td>
+        <td>Classify zero-payment transactions by business purpose.</td>
+    </tr>
+    
+    <tr>
+        <td>Transaction monitoring</td>
+        <td>REVIEW</td>
+        <td>Very high-value transactions require validation.</td>
+        <td>1 transactions exceed $100,000.</td>
+        <td>Unusual values can materially affect aggregate revenue.</td>
+        <td>Validate high-value transactions against source-system records.</td>
+    </tr>
+    
+    <tr>
+        <td>Data completeness</td>
+        <td>REVIEW</td>
+        <td>Missing primary_ticket_id values exist.</td>
+        <td>162,859 records are missing the identifier.</td>
+        <td>May affect customer, ticket, or subscription-level analysis.</td>
+        <td>Interpret missingness by product type before labeling it as an error.</td>
+    </tr>
+    
+    <tr>
+        <td>Data completeness</td>
+        <td>REVIEW</td>
+        <td>Missing subscription_instance_id values exist.</td>
+        <td>1,937,352 records are missing the identifier.</td>
+        <td>May affect customer, ticket, or subscription-level analysis.</td>
+        <td>Interpret missingness by product type before labeling it as an error.</td>
+    </tr>
+    
+    <tr>
+        <td>Reporting period</td>
+        <td>INFO</td>
+        <td>September 2026 is a partial month.</td>
+        <td>The latest transaction date is September 24, 2026.</td>
+        <td>Monthly comparisons can be misleading if partial periods are treated as complete.</td>
+        <td>Flag September 2026 as partial in dashboards and reports.</td>
+    </tr>
+    
+    <tr>
+        <td>Duplicate transactions</td>
+        <td>REVIEW</td>
+        <td>Repeated transaction IDs were detected.</td>
+        <td>10,000 duplicate transaction groups are present in the exported sample.</td>
+        <td>Could represent legitimate multi-line transactions or duplicate records.</td>
+        <td>Investigate transaction grain before deduplicating.</td>
+    </tr>
+    
 
 </tbody>
 
@@ -510,25 +303,17 @@ Determine whether repeated identifiers are expected at the dataset's business gr
 
 </section>
 
+
 <section>
 
 <h2>Yearly Revenue</h2>
 
 <img
 src="charts/01_yearly_revenue.png"
-alt="Yearly revenue chart">
+alt="Yearly revenue">
 
 </section>
 
-<section>
-
-<h2>Yearly Records</h2>
-
-<img
-src="charts/02_yearly_records.png"
-alt="Yearly records chart">
-
-</section>
 
 <section>
 
@@ -536,29 +321,32 @@ alt="Yearly records chart">
 
 <img
 src="charts/03_monthly_revenue.png"
-alt="Monthly revenue chart">
+alt="Monthly revenue">
 
 </section>
+
 
 <section>
 
-<h2>Product Types</h2>
+<h2>Revenue by Product Type</h2>
 
 <img
-src="charts/04_product_types.png"
-alt="Product types chart">
+src="charts/04_product_type_revenue.png"
+alt="Product type revenue">
 
 </section>
+
 
 <section>
 
-<h2>Sale Types</h2>
+<h2>Revenue by Application Channel</h2>
 
 <img
-src="charts/05_sale_types.png"
-alt="Sale types chart">
+src="charts/05_application_channel_revenue.png"
+alt="Application channel revenue">
 
 </section>
+
 
 <section>
 
@@ -566,31 +354,35 @@ alt="Sale types chart">
 
 <img
 src="charts/06_payment_percentiles.png"
-alt="Payment distribution chart">
+alt="Payment distribution">
 
 </section>
 
+
 <section>
 
-<h2>Audit Methodology</h2>
+<h2>Methodology</h2>
 
 <div class="card">
 
 <p>
-This audit was performed against the complete PostgreSQL
-source table.
+The audit analyzes the complete PostgreSQL source table.
 </p>
 
 <p>
-The audit does not load all source records into pandas.
-Large aggregations are performed by PostgreSQL and only
-small aggregate result sets are transferred to Python.
+The 5.3-million-row source table is not loaded into pandas
+at once.
 </p>
 
 <p>
-The source dataset contains more than five million records.
-Transaction-level exports are intentionally excluded from
-the published audit.
+PostgreSQL performs full-table aggregation and statistical
+processing. Python and pandas process the resulting small
+datasets.
+</p>
+
+<p>
+Anomalies are investigation candidates and are not
+automatically classified as fraud or errors.
 </p>
 
 </div>
