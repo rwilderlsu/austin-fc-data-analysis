@@ -1,0 +1,8 @@
+category,severity,issue,evidence,business_impact,recommended_action
+Data completeness,INFO,Dataset row count matches the verified updated dataset.,"5,335,362 records audited.",Supports confidence in the current database load.,Retain this dataset as the current audit baseline.
+Revenue data,REVIEW,Zero-payment transactions exist.,"2,069,655 records have a zero payment.","May represent complimentary, adjusted, test, or non-revenue transactions.",Classify zero-payment transactions by business purpose.
+Transaction monitoring,REVIEW,Very high-value transactions require validation.,"1 transactions exceed $100,000.",Unusual values can materially affect aggregate revenue.,Validate high-value transactions against source-system records.
+Data completeness,REVIEW,Missing primary_ticket_id values exist.,"162,859 records are missing the identifier.","May affect customer, ticket, or subscription-level analysis.",Interpret missingness by product type before labeling it as an error.
+Data completeness,REVIEW,Missing subscription_instance_id values exist.,"1,937,352 records are missing the identifier.","May affect customer, ticket, or subscription-level analysis.",Interpret missingness by product type before labeling it as an error.
+Reporting period,INFO,September 2026 is a partial month.,"The latest transaction date is September 24, 2026.",Monthly comparisons can be misleading if partial periods are treated as complete.,Flag September 2026 as partial in dashboards and reports.
+Duplicate transactions,REVIEW,Repeated transaction IDs were detected.,"10,000 duplicate transaction groups are present in the exported sample.",Could represent legitimate multi-line transactions or duplicate records.,Investigate transaction grain before deduplicating.

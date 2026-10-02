@@ -185,15 +185,31 @@ def save_csv(
     dataframe: pd.DataFrame,
     filename: str,
 ) -> Path:
+    """
+    Save the current audit result to the authoritative tables directory.
 
-    path = TABLES_DIR / filename
+    Also maintain the legacy results/*.csv location for backwards
+    compatibility with the original project structure.
+
+    The same freshly generated DataFrame is written to both locations.
+    """
+
+    table_path = TABLES_DIR / filename
 
     dataframe.to_csv(
-        path,
+        table_path,
         index=False,
     )
 
-    return path
+    # Maintain the legacy root-level audit output.
+    legacy_path = RESULTS_DIR / filename
+
+    dataframe.to_csv(
+        legacy_path,
+        index=False,
+    )
+
+    return table_path
 
 
 def money(value) -> str:

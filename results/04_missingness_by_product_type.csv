@@ -1,0 +1,4 @@
+product_type,total_records,missing_primary_ticket_id,missing_subscription_instance_id,missing_section,missing_row,missing_seat
+Ticket,3117996,0,1212330,123834,123834,123834
+Resale,2054507,0,725022,7540,7540,7540
+Subscription,162859,162859,0,25321,25321,25321
