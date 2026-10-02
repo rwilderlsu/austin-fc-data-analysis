@@ -1,0 +1,8 @@
+identifier,total_rows,non_null_rows,distinct_values,repeated_value_count
+primary_ticket_id,5172503,5172503,3117957,2054546
+subscription_instance_id,3398010,3398010,163831,3234179
+sales_item_id,5335362,5335362,5335148,214
+product_item_id,5335362,5335362,5335148,214
+transaction_id,5335362,5335362,1533468,3801894
+product_id,5335362,5335362,585,5334777
+internal_account_id,5335135,5335135,407379,4927756

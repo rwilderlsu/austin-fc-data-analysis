@@ -1,0 +1,6 @@
+product_type,sale_type,records,unique_primary_ticket_ids,unique_sales_item_ids,unique_transaction_ids,unique_subscription_instances,revenue
+Ticket,Sale,2982177,2982140,2982140,384715,113560,238514972.54
+Resale,Sale,2049474,1586061,2049333,1060206,98560,45549939.13
+Ticket,Reservation Confirmation,132096,132096,132096,38690,12018,12269708.61
+Subscription,Reservation Confirmation,99259,0,99259,48208,99259,97664654.56
+Subscription,Sale,63575,0,63575,33392,63575,88706739.27

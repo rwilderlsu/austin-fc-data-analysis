@@ -60,7 +60,10 @@ Thumbs.db
 # ============================================================
 # Publish safe aggregate audit results
 # ============================================================
+!results/
 !results/*.csv
+!results/tables/
+!results/tables/*.csv
 
 # Keep transaction-level identifier/detail exports private
 results/09_duplicate_sales_item_ids_top1000.csv

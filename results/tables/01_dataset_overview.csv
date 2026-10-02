@@ -1,0 +1,2 @@
+total_rows,rows_with_payment,rows_with_transaction_date,earliest_transaction,latest_transaction,total_revenue,average_payment,minimum_payment,maximum_payment,payment_stddev,null_payment,zero_payment,negative_payment
+5335362,5335362,5335362,2019-08-15 18:42:04.997,2026-09-24 20:04:57.997,482907804.9,90.51078537876155,0.0,293025.2,432.739608852531,0,2069655,0
